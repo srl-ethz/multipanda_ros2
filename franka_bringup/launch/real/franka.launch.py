@@ -52,7 +52,8 @@ def generate_launch_description():
         [
             FindPackageShare('franka_bringup'),
             'config',
-            'controllers.yaml',
+            'real',
+            'single_controllers.yaml',
         ]
     )
 
@@ -78,19 +79,19 @@ def generate_launch_description():
             default_value='false',
             description='Use Franka Gripper as an end-effector, otherwise, the robot is loaded '
                         'without an end-effector.'),
-        Node(
-            package='robot_state_publisher',
-            executable='robot_state_publisher',
-            name='robot_state_publisher',
-            output='screen',
-            parameters=[{'robot_description': robot_description}],
-        ),
+        # Node(
+        #     package='robot_state_publisher',
+        #     executable='robot_state_publisher',
+        #     name='robot_state_publisher',
+        #     output='screen',
+        #     parameters=[{'robot_description': robot_description}],
+        # ),
         Node(
             package='joint_state_publisher',
             executable='joint_state_publisher',
             name='joint_state_publisher',
             parameters=[
-                {'source_list': ['franka/joint_states', 'panda_gripper/joint_states'],
+                {'source_list': ['franka/joint_states'],
                  'rate': 30}],
         ),
         Node(
@@ -116,6 +117,12 @@ def generate_launch_description():
             arguments=['franka_robot_state_broadcaster'],
             output='screen',
             condition=UnlessCondition(use_fake_hardware),
+        ),
+        Node(
+            package='controller_manager',
+            executable='spawner',
+            arguments=['move_to_start_example_controller'],
+            output='screen',
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource([PathJoinSubstitution(

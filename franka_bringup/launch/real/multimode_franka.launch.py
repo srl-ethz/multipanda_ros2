@@ -62,7 +62,8 @@ def generate_launch_description():
         [
             FindPackageShare('franka_bringup'),
             'config',
-            'multimode.yaml',
+            'real', 
+            'single_multimode.yaml',
         ]
     )
 
@@ -76,7 +77,7 @@ def generate_launch_description():
             description='Unique arm ID of robot 1.'),
         DeclareLaunchArgument(
             use_rviz_parameter_name,
-            default_value='true',
+            default_value='false',
             description='Visualize the robot in Rviz'),
         DeclareLaunchArgument(
             use_fake_hardware_parameter_name,
@@ -89,7 +90,7 @@ def generate_launch_description():
                 use_fake_hardware_parameter_name)),
         DeclareLaunchArgument(
             load_gripper_1_parameter_name,
-            default_value='true',
+            default_value='false',
             description='Use Franka Gripper as an end-effector, otherwise, robot 1 is loaded '
                         'without an end-effector.'),
         Node(
@@ -104,13 +105,13 @@ def generate_launch_description():
             prefix=['stdbuf -o L'],
             on_exit=Shutdown(),
         ),
-        Node(
-            package='robot_state_publisher',
-            executable='robot_state_publisher',
-            name='robot_state_publisher',
-            output='screen',
-            parameters=[{'robot_description': robot_description}],
-        ),
+        # Node(
+        #     package='robot_state_publisher',
+        #     executable='robot_state_publisher',
+        #     name='robot_state_publisher',
+        #     output='screen',
+        #     parameters=[{'robot_description': robot_description}],
+        # ),
         Node(
             package='joint_state_publisher',
             executable='joint_state_publisher',

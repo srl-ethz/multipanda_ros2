@@ -15,11 +15,12 @@ setup(
     zip_safe=True,
     maintainer='jin-mirmi',
     maintainer_email='s.bien@tum.de',
-    description='TODO: Package description',
+    description='Small helper publishers/teleop nodes for multipanda_ros2',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'mmc_cartesian_keyboard = franka_simple_publishers.mmc_cartesian_keyboard:main',
         ],
     },
 )

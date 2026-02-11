@@ -40,8 +40,20 @@ check_gpu_support() {
     docker info 2>/dev/null | grep -q "nvidia"
 }
 
-# Ensure XServer access
-xhost +local:docker > /dev/null
+# Auto-detect whether we can provide X11/Display to the container.
+# If DISPLAY is set and xhost +local:docker succeeds, enable X11 mounts.
+X11_AVAILABLE=false
+if [ -n "$DISPLAY" ] && [ -d /tmp/.X11-unix ]; then
+    # try to grant access; if it fails we treat the environment as headless
+    if xhost +local:docker >/dev/null 2>&1; then
+        X11_AVAILABLE=true
+        echo "X11 display detected and xhost configured. Running with display support."
+    else
+        echo "DISPLAY set but xhost failed — falling back to headless mode."
+    fi
+else
+    echo "No X11 display detected — running headless."
+fi
 
 # ==============================================================================
 # 3. Dynamic Argument Construction (Using All Your Flags)
@@ -52,11 +64,27 @@ WS_SRC="/home/developer/multipanda_ws/src"
 # GPU Configuration
 WITH_GPU_CONFIG=()
 if check_nvidia_gpu && check_gpu_support; then
-    # Adding 'display' capability is key for OpenGL performance (MuJoCo/RViz)
-    WITH_GPU_CONFIG+=(--gpus 'all,"capabilities=compute,utility,graphics,display"')
+    if [ "$X11_AVAILABLE" = true ]; then
+        # With display: include display/graphics for OpenGL/RViz
+        WITH_GPU_CONFIG+=(--gpus 'all,"capabilities=compute,utility,graphics,display"')
+    else
+        # Headless: compute/utility only
+        WITH_GPU_CONFIG+=(--gpus 'all,"capabilities=compute,utility"')
+    fi
     echo "GPU support detected."
 else
     echo "No GPU support. Using CPU rendering."
+fi
+
+# Prepare envs / volumes depending on X11 availability
+DOCKER_ENV=()
+DOCKER_VOLUMES=()
+if [ "$X11_AVAILABLE" = true ]; then
+    DOCKER_ENV+=(--env "DISPLAY=$DISPLAY")
+    DOCKER_VOLUMES+=(--volume "/tmp/.X11-unix:/tmp/.X11-unix:rw")
+else
+    # set offscreen Qt platform to reduce warnings for headless GUI apps (optional)
+    DOCKER_ENV+=(--env "QT_QPA_PLATFORM=offscreen")
 fi
 
 # ==============================================================================
@@ -76,10 +104,10 @@ else
         --privileged \
         --tty \
         --interactive \
-        --env "DISPLAY=$DISPLAY" \
+        "${DOCKER_ENV[@]}" \
         --env "USER=$(id -u)" \
         --env "ROS_DOMAIN_ID=1" \
-        --volume "/tmp/.X11-unix:/tmp/.X11-unix:rw" \
+        "${DOCKER_VOLUMES[@]}" \
         --volume "/dev:/dev" \
         --volume "$HOME:/host" \
         --volume "${REPO_PATH}:/home/developer/multipanda_ws/src/" \

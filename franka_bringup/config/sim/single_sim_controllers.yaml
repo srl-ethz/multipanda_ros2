@@ -72,6 +72,6 @@ multi_mode_controller:
         panda_joint_impedance_controller: ["panda"]
         panda_cartesian_impedance_controller: ["panda"]
     start_controllers:
-        names: ["panda_joint_impedance_controller"]
+        names: ["panda_cartesian_impedance_controller"]
         resources:
-            panda_joint_impedance_controller: ["panda"]
+            panda_cartesian_impedance_controller: ["panda"]

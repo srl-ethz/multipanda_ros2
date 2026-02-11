@@ -133,13 +133,13 @@ def generate_launch_description():
             output='screen',
             condition=UnlessCondition(use_fake_hardware),
         ),
-        # Node(
-        #     package='controller_manager',
-        #     executable='spawner',
-        #     arguments=['franka_robot_state_broadcaster'],
-        #     output='screen',
-        #     condition=UnlessCondition(use_fake_hardware),
-        # ),
+        Node(
+            package='controller_manager',
+            executable='spawner',
+            arguments=['franka_robot_state_broadcaster'],
+            output='screen',
+            condition=UnlessCondition(use_fake_hardware),
+        ),
         # Node(
         #     package='controller_manager',
         #     executable='spawner',

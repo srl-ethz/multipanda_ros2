@@ -75,7 +75,7 @@ highlight_echo() {
 echo "Setting up environment for $REPO_NAME ($TAG_ARCH)"
 
 # *********************************************************
-# Tool Installation (Git, Python3, Pip3)
+# Tool Installation (Git)
 # *********************************************************
 
 # Git
@@ -84,19 +84,7 @@ if ! command -v git >/dev/null; then
     run_cmd sudo apt update && run_cmd sudo apt install -y git
 fi
 
-# Python3
-if ! command -v python3 >/dev/null; then
-    echo "Installing python3..."
-    run_cmd sudo apt update && run_cmd sudo apt install -y python3
-fi
-
-# Pip3
-if ! command -v pip3 >/dev/null; then
-    echo "Installing python3-pip..."
-    run_cmd sudo apt update && run_cmd sudo apt install -y python3-pip
-fi
-
-highlight_echo "Core tools (git, python3, pip3) are installed"
+highlight_echo "Core tools (git) are installed"
 
 # *********************************************************
 # Git Cleanup (Optional)

@@ -31,7 +31,7 @@ controller_manager:
       type: franka_example_controllers/MultiJointImpedanceExampleController
     dual_joint_velocity_example_controller:
       type: franka_example_controllers/DualJointVelocityExampleController
-    sim_multi_mode_controller:
+    multi_mode_controller:
       type: multi_mode_controller/MultiModeController
     
     
@@ -102,13 +102,20 @@ dual_joint_velocity_example_controller:
     arm_2:
       arm_id: mj_right
 
-sim_multi_mode_controller:
+multi_mode_controller:
   ros__parameters:
     arm_count: 2
     arm_1:
       arm_id: mj_left
     arm_2:
       arm_id: mj_right
+    world_to_franka_base:
+      mj_left:
+        translation: [0.0, 0.26, 0.0]
+        rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+      mj_right:
+        translation: [0.0, -0.26, 0.0]
+        rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
     controllers: ["panda_joint_impedance_controller", 
                   "panda_joint_velocity_controller",
                   "comless_coupled_dual_cartesian_impedance_controller", 

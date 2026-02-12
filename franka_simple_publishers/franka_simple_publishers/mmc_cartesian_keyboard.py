@@ -11,7 +11,11 @@ import rclpy
 from rclpy.node import Node
 
 from franka_msgs.msg import FrankaState
-from multi_mode_control_msgs.msg import CartesianImpedanceGoal, Controller
+from multi_mode_control_msgs.msg import (
+    CartesianImpedanceGoal,
+    Controller,
+    DualCartesianImpedanceGoal,
+)
 from multi_mode_control_msgs.srv import SetControllers
 
 
@@ -51,27 +55,54 @@ def quaternion_from_rotation_matrix(rotation):
 class MMCCartesianKeyboard(Node):
     def __init__(
         self,
+        mode,
         arm_id,
+        left_arm_id,
+        right_arm_id,
         step,
         controller_name,
         controller_service,
         state_topic,
+        left_state_topic,
+        right_state_topic,
         auto_switch,
     ):
         super().__init__("mmc_cartesian_keyboard")
 
+        self.mode = mode
+        self.is_dual_mode = self.mode == "dual"
         self.arm_id = arm_id
+        self.left_arm_id = left_arm_id
+        self.right_arm_id = right_arm_id
         self.step = step
         self.controller_name = controller_name
         self.controller_service = controller_service
         self.state_topic = state_topic
+        self.left_state_topic = left_state_topic
+        self.right_state_topic = right_state_topic
         self.auto_switch = auto_switch
 
-        self.goal_topic = f"/{self.arm_id}/{self.controller_name}/desired_pose"
-        self.goal_pub = self.create_publisher(CartesianImpedanceGoal, self.goal_topic, 10)
-        self.state_sub = self.create_subscription(
-            FrankaState, self.state_topic, self._state_callback, 10
-        )
+        if self.is_dual_mode:
+            self.resource = f"{self.left_arm_id}&{self.right_arm_id}"
+            topic_resource = self.resource.replace("&", "_and_")
+            self.goal_topic = f"/{topic_resource}/{self.controller_name}/desired_pose"
+            self.goal_pub = self.create_publisher(
+                DualCartesianImpedanceGoal, self.goal_topic, 10
+            )
+            self.left_state_sub = self.create_subscription(
+                FrankaState, self.left_state_topic, self._left_state_callback, 10
+            )
+            self.right_state_sub = self.create_subscription(
+                FrankaState, self.right_state_topic, self._right_state_callback, 10
+            )
+        else:
+            self.resource = self.arm_id
+            self.goal_topic = f"/{self.arm_id}/{self.controller_name}/desired_pose"
+            self.goal_pub = self.create_publisher(CartesianImpedanceGoal, self.goal_topic, 10)
+            self.state_sub = self.create_subscription(
+                FrankaState, self.state_topic, self._state_callback, 10
+            )
+
         self.set_controller_client = self.create_client(SetControllers, self.controller_service)
         self.fallback_controller_service = "/set_controllers"
         self.fallback_set_controller_client = None
@@ -81,11 +112,27 @@ class MMCCartesianKeyboard(Node):
             )
 
         self.have_state = False
+        self.have_left_state = False
+        self.have_right_state = False
+        self.desired_initialized = False
+
         self.current_position = [0.0, 0.0, 0.0]
         self.current_orientation = (1.0, 0.0, 0.0, 0.0)
         self.desired_position = [0.0, 0.0, 0.0]
         self.desired_orientation = (1.0, 0.0, 0.0, 0.0)
         self.latest_q = [0.0] * 7
+
+        self.left_current_position = [0.0, 0.0, 0.0]
+        self.left_current_orientation = (1.0, 0.0, 0.0, 0.0)
+        self.left_desired_position = [0.0, 0.0, 0.0]
+        self.left_desired_orientation = (1.0, 0.0, 0.0, 0.0)
+        self.left_latest_q = [0.0] * 7
+
+        self.right_current_position = [0.0, 0.0, 0.0]
+        self.right_current_orientation = (1.0, 0.0, 0.0, 0.0)
+        self.right_desired_position = [0.0, 0.0, 0.0]
+        self.right_desired_orientation = (1.0, 0.0, 0.0, 0.0)
+        self.right_latest_q = [0.0] * 7
 
         self.max_position_offset = 0.09
         self.translation_bindings = {
@@ -97,9 +144,18 @@ class MMCCartesianKeyboard(Node):
             "f": (0.0, 0.0, -self.step),
         }
 
-        self.get_logger().info(
-            f"Keyboard teleop ready. Goal topic: {self.goal_topic} | State topic: {self.state_topic}",
-        )
+        if self.is_dual_mode:
+            self.get_logger().info(
+                "Keyboard teleop ready. "
+                f"Mode: dual | Goal topic: {self.goal_topic} | "
+                f"State topics: {self.left_state_topic}, {self.right_state_topic}"
+            )
+        else:
+            self.get_logger().info(
+                "Keyboard teleop ready. "
+                f"Mode: single | Goal topic: {self.goal_topic} | "
+                f"State topic: {self.state_topic}",
+            )
         self.print_help()
 
         if self.auto_switch:
@@ -111,6 +167,7 @@ class MMCCartesianKeyboard(Node):
             "  w/s: +x/-x\n"
             "  a/d: +y/-y\n"
             "  r/f: +z/-z\n"
+            "  (in dual mode, translations are applied to both arms)\n"
             "  c: switch MMC to cartesian impedance controller\n"
             "  space: reset desired pose to current pose\n"
             "  h: print help\n"
@@ -121,24 +178,72 @@ class MMCCartesianKeyboard(Node):
         if self.switch_to_cartesian_controller():
             self._switch_timer.cancel()
 
-    def _state_callback(self, msg):
-        # FrankaState::o_t_ee is a 4x4 transform in column-major order.
+    @staticmethod
+    def _pose_from_state(msg):
         o_t_ee = msg.o_t_ee
-        self.current_position = [o_t_ee[12], o_t_ee[13], o_t_ee[14]]
+        position = [o_t_ee[12], o_t_ee[13], o_t_ee[14]]
         rotation = [
             [o_t_ee[0], o_t_ee[4], o_t_ee[8]],
             [o_t_ee[1], o_t_ee[5], o_t_ee[9]],
             [o_t_ee[2], o_t_ee[6], o_t_ee[10]],
         ]
-        self.current_orientation = quaternion_from_rotation_matrix(rotation)
-        self.latest_q = list(msg.q)
+        orientation = quaternion_from_rotation_matrix(rotation)
+        q = list(msg.q)
+        return position, orientation, q
+
+    def _state_callback(self, msg):
+        self.current_position, self.current_orientation, self.latest_q = self._pose_from_state(msg)
+        self.have_state = True
+        if not self.is_dual_mode and not self.desired_initialized:
+            self._initialize_desired_from_current()
+
+    def _left_state_callback(self, msg):
+        (
+            self.left_current_position,
+            self.left_current_orientation,
+            self.left_latest_q,
+        ) = self._pose_from_state(msg)
+        self.have_left_state = True
+        self._try_initialize_dual_desired()
+
+    def _right_state_callback(self, msg):
+        (
+            self.right_current_position,
+            self.right_current_orientation,
+            self.right_latest_q,
+        ) = self._pose_from_state(msg)
+        self.have_right_state = True
+        self._try_initialize_dual_desired()
+
+    def _try_initialize_dual_desired(self):
+        if not self.is_dual_mode:
+            return
+        if self.desired_initialized:
+            return
+        if self.have_left_state and self.have_right_state:
+            self._initialize_desired_from_current()
+
+    def _initialize_desired_from_current(self):
+        if self.is_dual_mode:
+            self.left_desired_position = self.left_current_position.copy()
+            self.left_desired_orientation = self.left_current_orientation
+            self.right_desired_position = self.right_current_position.copy()
+            self.right_desired_orientation = self.right_current_orientation
+            self.have_state = True
+            self.desired_initialized = True
+            self.get_logger().info(
+                "Initialized desired poses from current robot poses (dual mode)."
+            )
+            self.publish_goal()
+            return
 
         if not self.have_state:
-            self.have_state = True
-            self.desired_position = self.current_position.copy()
-            self.desired_orientation = self.current_orientation
-            self.get_logger().info("Initialized desired pose from current robot pose.")
-            self.publish_goal()
+            return
+        self.desired_position = self.current_position.copy()
+        self.desired_orientation = self.current_orientation
+        self.desired_initialized = True
+        self.get_logger().info("Initialized desired pose from current robot pose.")
+        self.publish_goal()
 
     def switch_to_cartesian_controller(self):
         active_client = self.set_controller_client
@@ -158,7 +263,7 @@ class MMCCartesianKeyboard(Node):
         request = SetControllers.Request()
         controller = Controller()
         controller.name = self.controller_name
-        controller.resources = [self.arm_id]
+        controller.resources = [self.resource]
         request.controllers = [controller]
 
         future = active_client.call_async(request)
@@ -173,7 +278,7 @@ class MMCCartesianKeyboard(Node):
             )
             return
         self.get_logger().info(
-            f"Requested controller switch to {self.controller_name} for resource {self.arm_id}."
+            f"Requested controller switch to {self.controller_name} for resource {self.resource}."
         )
 
     def handle_key(self, key):
@@ -185,44 +290,90 @@ class MMCCartesianKeyboard(Node):
             return
         if key == " ":
             if self.have_state:
-                self.desired_position = self.current_position.copy()
-                self.desired_orientation = self.current_orientation
-                self.publish_goal()
+                self._initialize_desired_from_current()
             return
 
         if key not in self.translation_bindings:
             return
 
         if not self.have_state:
-            self.get_logger().warn(
-                "No FrankaState received yet. Start franka_robot_state_broadcaster first."
-            )
+            if self.is_dual_mode:
+                self.get_logger().warn(
+                    "No FrankaState received yet for both arms. "
+                    "Start the two robot_state broadcasters first."
+                )
+            else:
+                self.get_logger().warn(
+                    "No FrankaState received yet. Start franka_robot_state_broadcaster first."
+                )
             return
 
         delta = self.translation_bindings[key]
-        for i in range(3):
-            self.desired_position[i] += delta[i]
+        if self.is_dual_mode:
+            for i in range(3):
+                self.left_desired_position[i] += delta[i]
+                self.right_desired_position[i] += delta[i]
+        else:
+            for i in range(3):
+                self.desired_position[i] += delta[i]
 
         self._enforce_safety_window()
         self.publish_goal()
 
-    def _enforce_safety_window(self):
+    def _clip_desired_position(self, desired_position, current_position):
         diff = [
-            self.desired_position[0] - self.current_position[0],
-            self.desired_position[1] - self.current_position[1],
-            self.desired_position[2] - self.current_position[2],
+            desired_position[0] - current_position[0],
+            desired_position[1] - current_position[1],
+            desired_position[2] - current_position[2],
         ]
         norm = math.sqrt(diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2])
         if norm <= self.max_position_offset or norm == 0.0:
-            return
+            return desired_position
         scale = self.max_position_offset / norm
-        self.desired_position = [
-            self.current_position[0] + diff[0] * scale,
-            self.current_position[1] + diff[1] * scale,
-            self.current_position[2] + diff[2] * scale,
+        return [
+            current_position[0] + diff[0] * scale,
+            current_position[1] + diff[1] * scale,
+            current_position[2] + diff[2] * scale,
         ]
 
+    def _enforce_safety_window(self):
+        if self.is_dual_mode:
+            self.left_desired_position = self._clip_desired_position(
+                self.left_desired_position, self.left_current_position
+            )
+            self.right_desired_position = self._clip_desired_position(
+                self.right_desired_position, self.right_current_position
+            )
+            return
+
+        self.desired_position = self._clip_desired_position(
+            self.desired_position, self.current_position
+        )
+
     def publish_goal(self):
+        if self.is_dual_mode:
+            goal = DualCartesianImpedanceGoal()
+            goal.l_pose.position.x = self.left_desired_position[0]
+            goal.l_pose.position.y = self.left_desired_position[1]
+            goal.l_pose.position.z = self.left_desired_position[2]
+            goal.l_pose.orientation.w = self.left_desired_orientation[0]
+            goal.l_pose.orientation.x = self.left_desired_orientation[1]
+            goal.l_pose.orientation.y = self.left_desired_orientation[2]
+            goal.l_pose.orientation.z = self.left_desired_orientation[3]
+
+            goal.r_pose.position.x = self.right_desired_position[0]
+            goal.r_pose.position.y = self.right_desired_position[1]
+            goal.r_pose.position.z = self.right_desired_position[2]
+            goal.r_pose.orientation.w = self.right_desired_orientation[0]
+            goal.r_pose.orientation.x = self.right_desired_orientation[1]
+            goal.r_pose.orientation.y = self.right_desired_orientation[2]
+            goal.r_pose.orientation.z = self.right_desired_orientation[3]
+
+            goal.l_q_n = self.left_latest_q
+            goal.r_q_n = self.right_latest_q
+            self.goal_pub.publish(goal)
+            return
+
         goal = CartesianImpedanceGoal()
         goal.pose.position.x = self.desired_position[0]
         goal.pose.position.y = self.desired_position[1]
@@ -237,18 +388,35 @@ class MMCCartesianKeyboard(Node):
 
 def parse_args(args):
     parser = argparse.ArgumentParser(
-        description="Keyboard teleop for single-arm MMC cartesian impedance controller."
+        description="Keyboard teleop for MMC Cartesian impedance controllers (single or dual arm)."
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["single", "dual"],
+        default="single",
+        help="Use single-arm Cartesian goal or dual-arm Cartesian goal publishing.",
     )
     parser.add_argument("--arm-id", default="panda")
+    parser.add_argument("--left-arm-id", default="left")
+    parser.add_argument("--right-arm-id", default="right")
     parser.add_argument("--step", type=float, default=0.01)
     parser.add_argument(
-        "--controller-name", default="panda_cartesian_impedance_controller"
+        "--controller-name",
+        default=None,
+        help="Controller name. Defaults to panda_cartesian_impedance_controller (single) "
+        "or dual_cartesian_impedance_controller (dual).",
     )
     parser.add_argument(
         "--controller-service", default="/multi_mode_controller/set_controllers"
     )
     parser.add_argument(
         "--state-topic", default="/franka_robot_state_broadcaster/robot_state"
+    )
+    parser.add_argument(
+        "--left-state-topic", default="/franka_left_robot_state_broadcaster/robot_state"
+    )
+    parser.add_argument(
+        "--right-state-topic", default="/franka_right_robot_state_broadcaster/robot_state"
     )
     parser.add_argument("--no-auto-switch", action="store_true")
     return parser.parse_args(args)
@@ -259,12 +427,24 @@ def main(args=None):
     rclpy.init(args=ros_args)
     parsed = parse_args(rclpy.utilities.remove_ros_args(args=ros_args)[1:])
 
+    controller_name = parsed.controller_name
+    if controller_name is None:
+        if parsed.mode == "dual":
+            controller_name = "dual_cartesian_impedance_controller"
+        else:
+            controller_name = "panda_cartesian_impedance_controller"
+
     node = MMCCartesianKeyboard(
+        mode=parsed.mode,
         arm_id=parsed.arm_id,
+        left_arm_id=parsed.left_arm_id,
+        right_arm_id=parsed.right_arm_id,
         step=parsed.step,
-        controller_name=parsed.controller_name,
+        controller_name=controller_name,
         controller_service=parsed.controller_service,
         state_topic=parsed.state_topic,
+        left_state_topic=parsed.left_state_topic,
+        right_state_topic=parsed.right_state_topic,
         auto_switch=not parsed.no_auto_switch,
     )
 

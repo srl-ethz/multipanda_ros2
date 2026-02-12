@@ -1,6 +1,7 @@
 #include <multi_mode_controller/controllers/panda_cartesian_impedance_controller.h>
 
 #include <multi_mode_controller/utils/controller_factory.h>
+#include <multi_mode_controller/utils/world_frame_transforms.h>
 
 using namespace panda_controllers;
 using Eigen::Vector3d;
@@ -19,12 +20,33 @@ using Controller = PandaCartesianImpedanceController;
 static auto registration = ControllerFactory::registerClass<Controller>(
     "panda_cartesian_impedance_controller");
 
+bool Controller::initImpl(const std::vector<RobotData*>& /*robot_data*/,
+                          rclcpp_lifecycle::LifecycleNode::SharedPtr& node,
+                          std::string name,
+                          std::string resource) {
+  return loadWorldToFrankaBaseTransformsForResource(
+      node, name, resource, 1, arm_ids_, world_to_franka_base_);
+}
 
 bool Controller::desiredPoseCallbackImpl(Pose& p_d, 
                                          const Pose& p,
                                          const GoalMsg& msg) {
-  p_d.position = Vector3d(msg.pose.position.x, msg.pose.position.y,
-                          msg.pose.position.z);
+  const Vector3d world_position(msg.pose.position.x, msg.pose.position.y,
+                                msg.pose.position.z);
+  const Quaterniond world_orientation(msg.pose.orientation.w,
+                                      msg.pose.orientation.x,
+                                      msg.pose.orientation.y,
+                                      msg.pose.orientation.z);
+  if (!transformWorldPoseToFrankaBase(world_position, world_orientation,
+                                      world_to_franka_base_.at(0),
+                                      p_d.position, p_d.orientation)) {
+    auto& clk = *PandaControllerBase<Parameters, Pose>::node_->get_clock();
+    const auto& logger = PandaControllerBase<Parameters, Pose>::node_->get_logger();
+    RCLCPP_WARN_THROTTLE(
+        logger, clk, 1000,
+        "panda_cartesian_impedance_controller: Discarding target pose with invalid orientation quaternion.");
+    return false;
+  }
   if ((p_d.position+PandaControllerBase<Parameters, Pose>::getOffset().position-p.position).norm() > 0.1) {
     auto& clk = *PandaControllerBase<Parameters, Pose>::node_->get_clock();
     const auto& logger = PandaControllerBase<Parameters, Pose>::node_->get_logger();
@@ -34,8 +56,6 @@ bool Controller::desiredPoseCallbackImpl(Pose& p_d,
         (p_d.position+PandaControllerBase<Parameters, Pose>::getOffset().position-p.position).norm());
     return false;
   }
-  p_d.orientation = Quaterniond(msg.pose.orientation.w, msg.pose.orientation.x,
-                                msg.pose.orientation.y, msg.pose.orientation.z);
   if (p.orientation.angularDistance(p_d.orientation) > 0.15) {
     auto& clk = *PandaControllerBase<Parameters, Pose>::node_->get_clock();
     const auto& logger = PandaControllerBase<Parameters, Pose>::node_->get_logger();

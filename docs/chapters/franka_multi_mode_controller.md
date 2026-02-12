@@ -210,6 +210,8 @@ bool desiredPoseCallbackImpl(Pose& p_d,
 ```
 where `p_d` is the reference to the desired `Pose` that you saw earlier in the `computeTaulImpl`, `p` is the robot's current `Pose`, and `msg` is the message you received.
 `p` is provided to allow for implementing safety checks before setting the desired pose. In the example, this is used to check for whether `p_d` is too far away from the current pose, as that would result in too high of a torque value.
+For Cartesian MMC controllets, goal poses are interpreted in the world base frame.
+Each controller converts that goal into the controlled arm's Franka base frame using the configured `world_to_franka_base` transform before running safety checks and control.
 
 - setParametersCallbackImpl
 This function is similar to the above: it provides you with the reference to the desired `Param` `p_d`, the current `Param` `p`, and the typical ROS2 service request and response variables.
@@ -286,6 +288,10 @@ multi_mode_controller:
     arm_count: 1
     arm_1:
       arm_id: panda
+    world_to_franka_base:
+      panda:
+        translation: [0.0, 0.0, 0.0]
+        rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
     controllers: ["panda_joint_impedance_controller", "panda_cartesian_impedance_controller"]
     resources:
         panda_joint_impedance_controller: ["panda"]
@@ -296,6 +302,20 @@ multi_mode_controller:
             panda_cartesian_impedance_controller: ["panda"]
 
 ```
+For dual-arm resources, configure one transform per arm id:
+``` yaml
+real_multi_mode_controller:
+  ros__parameters:
+    world_to_franka_base:
+      rl_left:
+        translation: [0.0, 0.26, 0.0]
+        rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+      rl_right:
+        translation: [0.0, -0.26, 0.0]
+        rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+```
+`translation` is `[x, y, z]` and `rotation_xyzw` is `[x, y, z, w]`.
+
 Each loaded controllet has its own set of internal variables, e.g. parameters and desired pose. They are not shared across controllets.
 
 For a multi-arm example, please look at `dual_multimode.yaml`.

@@ -1,6 +1,10 @@
 #pragma once
 
+#include <string>
+#include <vector>
+
 #include <Eigen/Dense>
+#include <Eigen/StdVector>
 
 #include <multi_mode_controller/base/panda_controller_ros_interface.h>
 #include <multi_mode_controller/controllers/comless_dual_cartesian_impedance_controller.h>
@@ -23,6 +27,11 @@ public:
   virtual ~TwinCartesianImpedanceController() = default;
 
 private:
+  bool initImpl(const std::vector<RobotData*>& robot_data,
+                rclcpp_lifecycle::LifecycleNode::SharedPtr& node,
+                std::string name,
+                std::string resource) override final;
+
   bool desiredPoseCallbackImpl(Pose& p_d,
                                const Pose& p,
                                const GoalMsg& msg)
@@ -33,6 +42,10 @@ private:
         const ServiceParameter::Request::SharedPtr& req, 
         const ServiceParameter::Response::SharedPtr& res) 
         override final;
+
+  std::vector<std::string> arm_ids_;
+  std::vector<Eigen::Affine3d, Eigen::aligned_allocator<Eigen::Affine3d>>
+      world_to_franka_base_;
 
 };
 }

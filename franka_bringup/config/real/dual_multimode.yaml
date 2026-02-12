@@ -24,6 +24,10 @@ rl_left_state_broadcaster:
   ros__parameters:
     arm_id: rl_left
     frequency: 100
+    world_to_franka_base:
+      translation: [0.0, 0.26, 0.0]
+      rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+    world_frame_id: world
 
 rl_left_model_broadcaster:
   ros__parameters:
@@ -34,6 +38,10 @@ rl_right_state_broadcaster:
   ros__parameters:
     arm_id: rl_right
     frequency: 100
+    world_to_franka_base:
+      translation: [0.0, -0.26, 0.0]
+      rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+    world_frame_id: world
 
 rl_right_model_broadcaster:
   ros__parameters:

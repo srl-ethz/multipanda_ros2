@@ -39,6 +39,10 @@ controller_manager:
 franka_robot_state_broadcaster:
   ros__parameters:
     arm_id: panda
+    world_to_franka_base:
+      translation: [0.0, 0.0, 0.0]
+      rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+    world_frame_id: world
 
 model_example_controller:
   ros__parameters:

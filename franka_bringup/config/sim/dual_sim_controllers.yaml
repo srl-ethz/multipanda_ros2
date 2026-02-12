@@ -39,11 +39,19 @@ franka_left_robot_state_broadcaster:
   ros__parameters:
     arm_id: mj_left
     frequency: 30
+    world_to_franka_base:
+      translation: [0.0, 0.26, 0.0]
+      rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+    world_frame_id: world
 
 franka_right_robot_state_broadcaster:
   ros__parameters:
     arm_id: mj_right
     frequency: 30
+    world_to_franka_base:
+      translation: [0.0, -0.26, 0.0]
+      rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+    world_frame_id: world
 
 franka_left_robot_model_broadcaster:
   ros__parameters:

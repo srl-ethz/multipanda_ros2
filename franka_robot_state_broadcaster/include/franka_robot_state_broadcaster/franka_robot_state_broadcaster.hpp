@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -53,6 +54,8 @@ class FrankaRobotStateBroadcaster : public controller_interface::ControllerInter
     size_t arm_count;
     rclcpp::Time last_pub_;
     double frequency;
+    std::array<double, 16> world_t_base_{};
+    std::string world_frame_id_{"world"};
 };
 
 } // namespace franka_robot_state_broadcaster

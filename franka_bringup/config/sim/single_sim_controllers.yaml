@@ -32,6 +32,10 @@ franka_robot_state_broadcaster:
   ros__parameters:
     arm_id: panda
     frequency: 60
+    world_to_franka_base:
+      translation: [0.0, 0.0, 0.0]
+      rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+    world_frame_id: world
     
 franka_robot_model_broadcaster:
   ros__parameters:

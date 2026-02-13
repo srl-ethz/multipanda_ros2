@@ -34,6 +34,7 @@ rclcpp_lifecycle
 rcutils
 realtime_tools
 sensor_msgs
+geometry_msgs
 Franka
 )
 

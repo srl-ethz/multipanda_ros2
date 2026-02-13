@@ -20,6 +20,7 @@
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
 #include "rcpputils/split.hpp"
 #include "rcutils/logging_macros.h"
+#include "geometry_msgs/msg/pose_stamped.hpp"
 #include "std_msgs/msg/header.hpp"
 
 namespace {
@@ -65,6 +66,57 @@ void transformPose(
     const std::array<double, 16>& world_t_base,
     std::array<double, 16>& base_t_pose) {
   base_t_pose = multiplyColumnMajorTransforms(world_t_base, base_t_pose);
+}
+
+std::array<double, 4> quaternionFromColumnMajorRotation(
+    const std::array<double, 16>& transform) {
+  const double r00 = transform[0];
+  const double r01 = transform[4];
+  const double r02 = transform[8];
+  const double r10 = transform[1];
+  const double r11 = transform[5];
+  const double r12 = transform[9];
+  const double r20 = transform[2];
+  const double r21 = transform[6];
+  const double r22 = transform[10];
+
+  double qw = 1.0;
+  double qx = 0.0;
+  double qy = 0.0;
+  double qz = 0.0;
+
+  const double trace = r00 + r11 + r22;
+  if (trace > 0.0) {
+    const double scale = std::sqrt(trace + 1.0) * 2.0;
+    qw = 0.25 * scale;
+    qx = (r21 - r12) / scale;
+    qy = (r02 - r20) / scale;
+    qz = (r10 - r01) / scale;
+  } else if (r00 > r11 && r00 > r22) {
+    const double scale = std::sqrt(1.0 + r00 - r11 - r22) * 2.0;
+    qw = (r21 - r12) / scale;
+    qx = 0.25 * scale;
+    qy = (r01 + r10) / scale;
+    qz = (r02 + r20) / scale;
+  } else if (r11 > r22) {
+    const double scale = std::sqrt(1.0 + r11 - r00 - r22) * 2.0;
+    qw = (r02 - r20) / scale;
+    qx = (r01 + r10) / scale;
+    qy = 0.25 * scale;
+    qz = (r12 + r21) / scale;
+  } else {
+    const double scale = std::sqrt(1.0 + r22 - r00 - r11) * 2.0;
+    qw = (r10 - r01) / scale;
+    qx = (r02 + r20) / scale;
+    qy = (r12 + r21) / scale;
+    qz = 0.25 * scale;
+  }
+
+  const double norm = std::sqrt(qw * qw + qx * qx + qy * qy + qz * qz);
+  if (norm < 1e-9) {
+    return {{1.0, 0.0, 0.0, 0.0}};
+  }
+  return {{qw / norm, qx / norm, qy / norm, qz / norm}};
 }
 
 void transformSpatialVector(
@@ -325,7 +377,15 @@ controller_interface::CallbackReturn FrankaRobotStateBroadcaster::on_configure(
     realtime_franka_state_publisher =
         std::make_shared<realtime_tools::RealtimePublisher<franka_msgs::msg::FrankaState>>(
             franka_state_publisher);
-    ;
+    const std::string end_effector_pose_topic =
+        "/" + arm_id + "/arm/end_effector_pose";
+    end_effector_pose_publisher =
+        get_node()->create_publisher<geometry_msgs::msg::PoseStamped>(
+            end_effector_pose_topic, rclcpp::SystemDefaultsQoS());
+    realtime_end_effector_pose_publisher =
+        std::make_shared<
+            realtime_tools::RealtimePublisher<geometry_msgs::msg::PoseStamped>>(
+            end_effector_pose_publisher);
   } catch (const std::exception& e) {
     fprintf(stderr,
             "Exception thrown during publisher creation at configure stage with message : %s \n",
@@ -386,6 +446,23 @@ controller_interface::return_type FrankaRobotStateBroadcaster::update(
     transformSpatialVector(world_t_base_, realtime_franka_state_publisher->msg_.o_dp_ee_d);
     transformSpatialVector(world_t_base_, realtime_franka_state_publisher->msg_.o_dp_ee_c);
     transformSpatialVector(world_t_base_, realtime_franka_state_publisher->msg_.o_ddp_ee_c);
+
+    if (realtime_end_effector_pose_publisher &&
+        realtime_end_effector_pose_publisher->trylock()) {
+      auto& pose_msg = realtime_end_effector_pose_publisher->msg_;
+      pose_msg.header.stamp = time;
+      pose_msg.header.frame_id = world_frame_id_;
+      pose_msg.pose.position.x = realtime_franka_state_publisher->msg_.o_t_ee[12];
+      pose_msg.pose.position.y = realtime_franka_state_publisher->msg_.o_t_ee[13];
+      pose_msg.pose.position.z = realtime_franka_state_publisher->msg_.o_t_ee[14];
+      const auto quat_wxyz =
+          quaternionFromColumnMajorRotation(realtime_franka_state_publisher->msg_.o_t_ee);
+      pose_msg.pose.orientation.w = quat_wxyz[0];
+      pose_msg.pose.orientation.x = quat_wxyz[1];
+      pose_msg.pose.orientation.y = quat_wxyz[2];
+      pose_msg.pose.orientation.z = quat_wxyz[3];
+      realtime_end_effector_pose_publisher->unlockAndPublish();
+    }
 
     realtime_franka_state_publisher->unlockAndPublish();
     last_pub_ = get_node()->now();

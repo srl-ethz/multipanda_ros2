@@ -9,6 +9,7 @@
 #include "franka_msgs/msg/franka_state.hpp"
 #include "franka_msgs/msg/errors.hpp"
 #include "franka_semantic_components/franka_robot_state.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
 
 #include "controller_interface/controller_interface.hpp"
 #include "rclcpp_lifecycle/lifecycle_publisher.hpp"
@@ -50,6 +51,10 @@ class FrankaRobotStateBroadcaster : public controller_interface::ControllerInter
     std::shared_ptr<rclcpp::Publisher<franka_msgs::msg::FrankaState>> franka_state_publisher;
     std::shared_ptr<realtime_tools::RealtimePublisher<franka_msgs::msg::FrankaState>>
         realtime_franka_state_publisher;   
+    std::shared_ptr<rclcpp::Publisher<geometry_msgs::msg::PoseStamped>>
+        end_effector_pose_publisher;
+    std::shared_ptr<realtime_tools::RealtimePublisher<geometry_msgs::msg::PoseStamped>>
+        realtime_end_effector_pose_publisher;
     std::unique_ptr<franka_semantic_components::FrankaRobotState> franka_robot_state;
     size_t arm_count;
     rclcpp::Time last_pub_;

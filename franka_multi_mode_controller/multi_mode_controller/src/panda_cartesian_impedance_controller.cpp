@@ -12,6 +12,7 @@ using Vector7d = Eigen::Matrix<double, 7, 1>;
 using Pose = PandaCartesianImpedanceControllerPose;
 using Parameters = PandaCartesianImpedanceControllerParams;
 using GoalMsg = multi_mode_control_msgs::msg::CartesianImpedanceGoal;
+using PoseStamped = geometry_msgs::msg::PoseStamped;
 using ConfigRequest = multi_mode_control_msgs::srv::SetCartesianImpedance::Request;
 using ConfigResponse = multi_mode_control_msgs::srv::SetCartesianImpedance::Response;
 using Controller = PandaCartesianImpedanceController;
@@ -26,6 +27,34 @@ bool Controller::initImpl(const std::vector<RobotData*>& /*robot_data*/,
                           std::string resource) {
   return loadWorldToFrankaBaseTransformsForResource(
       node, name, resource, 1, arm_ids_, world_to_franka_base_);
+}
+
+void Controller::startROSComImpl() {
+  const std::string topic_name = "/" + arm_ids_.at(0) + "/arm/end_effector_pose_cmd";
+  end_effector_pose_cmd_sub_ =
+      PandaControllerBase<Parameters, Pose>::node_->create_subscription<PoseStamped>(
+          topic_name, 10,
+          [this](const PoseStamped& msg) { this->endEffectorPoseCmdCallback(msg); });
+}
+
+void Controller::stopROSComImpl() {
+  end_effector_pose_cmd_sub_.reset();
+}
+
+void Controller::endEffectorPoseCmdCallback(const PoseStamped& msg) {
+  GoalMsg command_msg;
+  command_msg.pose = msg.pose;
+  const Pose desired_pose = this->getDesiredPoseBuffered();
+  for (std::size_t i = 0; i < 7; ++i) {
+    command_msg.q_n[i] = desired_pose.q_n(i);
+  }
+
+  Pose p_d;
+  if (desiredPoseCallbackImpl(p_d, this->getCurrentPose(), command_msg)) {
+    this->setDesiredPoseBuffered(p_d);
+  } else {
+    this->setError(true);
+  }
 }
 
 bool Controller::desiredPoseCallbackImpl(Pose& p_d, 

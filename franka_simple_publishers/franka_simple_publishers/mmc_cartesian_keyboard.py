@@ -8,13 +8,12 @@ import termios
 import tty
 
 import rclpy
+from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
 
 from franka_msgs.msg import FrankaState
 from multi_mode_control_msgs.msg import (
-    CartesianImpedanceGoal,
     Controller,
-    DualCartesianImpedanceGoal,
 )
 from multi_mode_control_msgs.srv import SetControllers
 
@@ -84,10 +83,13 @@ class MMCCartesianKeyboard(Node):
 
         if self.is_dual_mode:
             self.resource = f"{self.left_arm_id}&{self.right_arm_id}"
-            topic_resource = self.resource.replace("&", "_and_")
-            self.goal_topic = f"/{topic_resource}/{self.controller_name}/desired_pose"
-            self.goal_pub = self.create_publisher(
-                DualCartesianImpedanceGoal, self.goal_topic, 10
+            self.left_goal_topic = f"/{self.left_arm_id}/arm/end_effector_pose_cmd"
+            self.right_goal_topic = f"/{self.right_arm_id}/arm/end_effector_pose_cmd"
+            self.left_goal_pub = self.create_publisher(
+                PoseStamped, self.left_goal_topic, 10
+            )
+            self.right_goal_pub = self.create_publisher(
+                PoseStamped, self.right_goal_topic, 10
             )
             self.left_state_sub = self.create_subscription(
                 FrankaState, self.left_state_topic, self._left_state_callback, 10
@@ -97,8 +99,8 @@ class MMCCartesianKeyboard(Node):
             )
         else:
             self.resource = self.arm_id
-            self.goal_topic = f"/{self.arm_id}/{self.controller_name}/desired_pose"
-            self.goal_pub = self.create_publisher(CartesianImpedanceGoal, self.goal_topic, 10)
+            self.goal_topic = f"/{self.arm_id}/arm/end_effector_pose_cmd"
+            self.goal_pub = self.create_publisher(PoseStamped, self.goal_topic, 10)
             self.state_sub = self.create_subscription(
                 FrankaState, self.state_topic, self._state_callback, 10
             )
@@ -147,7 +149,8 @@ class MMCCartesianKeyboard(Node):
         if self.is_dual_mode:
             self.get_logger().info(
                 "Keyboard teleop ready. "
-                f"Mode: dual | Goal topic: {self.goal_topic} | "
+                "Mode: dual | Goal topics: "
+                f"{self.left_goal_topic}, {self.right_goal_topic} | "
                 f"State topics: {self.left_state_topic}, {self.right_state_topic}"
             )
         else:
@@ -350,51 +353,47 @@ class MMCCartesianKeyboard(Node):
             self.desired_position, self.current_position
         )
 
+    def _create_pose_stamped(self, position, orientation, stamp):
+        pose_msg = PoseStamped()
+        pose_msg.header.stamp = stamp
+        pose_msg.header.frame_id = "world"
+        pose_msg.pose.position.x = position[0]
+        pose_msg.pose.position.y = position[1]
+        pose_msg.pose.position.z = position[2]
+        pose_msg.pose.orientation.w = orientation[0]
+        pose_msg.pose.orientation.x = orientation[1]
+        pose_msg.pose.orientation.y = orientation[2]
+        pose_msg.pose.orientation.z = orientation[3]
+        return pose_msg
+
     def publish_goal(self):
+        stamp = self.get_clock().now().to_msg()
         if self.is_dual_mode:
-            goal = DualCartesianImpedanceGoal()
-            goal.l_pose.position.x = self.left_desired_position[0]
-            goal.l_pose.position.y = self.left_desired_position[1]
-            goal.l_pose.position.z = self.left_desired_position[2]
-            goal.l_pose.orientation.w = self.left_desired_orientation[0]
-            goal.l_pose.orientation.x = self.left_desired_orientation[1]
-            goal.l_pose.orientation.y = self.left_desired_orientation[2]
-            goal.l_pose.orientation.z = self.left_desired_orientation[3]
-
-            goal.r_pose.position.x = self.right_desired_position[0]
-            goal.r_pose.position.y = self.right_desired_position[1]
-            goal.r_pose.position.z = self.right_desired_position[2]
-            goal.r_pose.orientation.w = self.right_desired_orientation[0]
-            goal.r_pose.orientation.x = self.right_desired_orientation[1]
-            goal.r_pose.orientation.y = self.right_desired_orientation[2]
-            goal.r_pose.orientation.z = self.right_desired_orientation[3]
-
-            goal.l_q_n = self.left_latest_q
-            goal.r_q_n = self.right_latest_q
-            self.goal_pub.publish(goal)
+            left_pose_msg = self._create_pose_stamped(
+                self.left_desired_position, self.left_desired_orientation, stamp
+            )
+            right_pose_msg = self._create_pose_stamped(
+                self.right_desired_position, self.right_desired_orientation, stamp
+            )
+            self.left_goal_pub.publish(left_pose_msg)
+            self.right_goal_pub.publish(right_pose_msg)
             return
 
-        goal = CartesianImpedanceGoal()
-        goal.pose.position.x = self.desired_position[0]
-        goal.pose.position.y = self.desired_position[1]
-        goal.pose.position.z = self.desired_position[2]
-        goal.pose.orientation.w = self.desired_orientation[0]
-        goal.pose.orientation.x = self.desired_orientation[1]
-        goal.pose.orientation.y = self.desired_orientation[2]
-        goal.pose.orientation.z = self.desired_orientation[3]
-        goal.q_n = self.latest_q
-        self.goal_pub.publish(goal)
+        pose_msg = self._create_pose_stamped(
+            self.desired_position, self.desired_orientation, stamp
+        )
+        self.goal_pub.publish(pose_msg)
 
 
 def parse_args(args):
     parser = argparse.ArgumentParser(
-        description="Keyboard teleop for MMC Cartesian impedance controllers (single or dual arm)."
+        description="Keyboard teleop for MMC Cartesian impedance controllers (single or dual arm), publishing PoseStamped end-effector commands."
     )
     parser.add_argument(
         "--mode",
         choices=["single", "dual"],
         default="single",
-        help="Use single-arm Cartesian goal or dual-arm Cartesian goal publishing.",
+        help="Use single-arm or dual-arm PoseStamped end-effector command publishing.",
     )
     parser.add_argument("--arm-id", default="panda")
     parser.add_argument("--left-arm-id", default="left")

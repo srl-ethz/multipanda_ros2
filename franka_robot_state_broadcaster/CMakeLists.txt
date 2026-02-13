@@ -19,6 +19,7 @@ set(THIS_PACKAGE_INCLUDE_DEPENDS
     controller_manager
     franka_msgs
     franka_semantic_components
+    geometry_msgs
     generate_parameter_library
     pluginlib
     rclcpp

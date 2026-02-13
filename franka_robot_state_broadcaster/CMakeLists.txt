@@ -21,6 +21,7 @@ set(THIS_PACKAGE_INCLUDE_DEPENDS
     franka_semantic_components
     generate_parameter_library
     pluginlib
+    rclcpp
     rclcpp_lifecycle
     rcutils
     realtime_tools
@@ -54,9 +55,18 @@ ament_target_dependencies(franka_robot_state_broadcaster PUBLIC
   
 pluginlib_export_plugin_description_file(controller_interface franka_robot_state_broadcaster.xml)
 
+add_executable(hardware_layout_server src/hardware_layout_server.cpp)
+ament_target_dependencies(hardware_layout_server
+                          ${THIS_PACKAGE_INCLUDE_DEPENDS})
+
 install(
         TARGETS franka_robot_state_broadcaster
         DESTINATION lib
+)
+
+install(
+        TARGETS hardware_layout_server
+        DESTINATION lib/${PROJECT_NAME}
 )
 
 install(

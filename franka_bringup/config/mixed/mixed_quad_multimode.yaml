@@ -39,18 +39,10 @@ rl_left_state_broadcaster:
   ros__parameters:
     arm_id: rl_left
     frequency: 100
-    world_to_franka_base:
-      translation: [0.0, 0.26, 0.0]
-      rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
-    world_frame_id: world
 rl_right_state_broadcaster:
   ros__parameters:
     arm_id: rl_right
     frequency: 100
-    world_to_franka_base:
-      translation: [0.0, -0.26, 0.0]
-      rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
-    world_frame_id: world
 
 mj_left_model_broadcaster:
   ros__parameters:
@@ -64,18 +56,10 @@ mj_left_state_broadcaster:
   ros__parameters:
     arm_id: mj_left
     frequency: 100
-    world_to_franka_base:
-      translation: [0.0, 0.26, 0.0]
-      rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
-    world_frame_id: world
 mj_right_state_broadcaster:
   ros__parameters:
     arm_id: mj_right
     frequency: 100
-    world_to_franka_base:
-      translation: [0.0, -0.26, 0.0]
-      rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
-    world_frame_id: world
 
 real_multi_mode_controller:
   ros__parameters:
@@ -84,13 +68,6 @@ real_multi_mode_controller:
       arm_id: rl_left
     arm_2:
       arm_id: rl_right
-    world_to_franka_base:
-      rl_left:
-        translation: [0.0, 0.26, 0.0]
-        rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
-      rl_right:
-        translation: [0.0, -0.26, 0.0]
-        rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
     controllers: ["panda_joint_impedance_controller", 
                   "panda_joint_velocity_controller",
                   "comless_coupled_dual_cartesian_impedance_controller", 
@@ -113,13 +90,6 @@ sim_multi_mode_controller:
       arm_id: mj_left
     arm_2:
       arm_id: mj_right
-    world_to_franka_base:
-      mj_left:
-        translation: [0.0, 0.26, 0.0]
-        rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
-      mj_right:
-        translation: [0.0, -0.26, 0.0]
-        rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
     controllers: ["panda_joint_impedance_controller", 
                   "panda_joint_velocity_controller",
                   "dual_cartesian_impedance_controller"]

@@ -1,11 +1,13 @@
 #pragma once
 
+#include <chrono>
 #include <string>
 #include <vector>
 
 #include <Eigen/Dense>
 #include <Eigen/StdVector>
 
+#include <rclcpp/parameter_client.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 
@@ -33,6 +35,46 @@ inline bool loadDoubleArrayParameter(
   return true;
 }
 
+inline bool loadDoubleArrayParameterFromHardwareLayout(
+    const rclcpp_lifecycle::LifecycleNode::SharedPtr& node,
+    const std::string& parameter_name,
+    bool& has_parameter,
+    std::vector<double>& values) {
+  has_parameter = false;
+  values.clear();
+  constexpr auto kTimeout = std::chrono::milliseconds(300);
+  try {
+    auto parameter_client =
+        std::make_shared<rclcpp::SyncParametersClient>(node, "/hardware_layout");
+    if (!parameter_client->wait_for_service(kTimeout)) {
+      return true;
+    }
+
+    const auto parameters = parameter_client->get_parameters({parameter_name});
+    if (parameters.empty()) {
+      return true;
+    }
+    const auto& parameter = parameters.front();
+    if (parameter.get_type() == rclcpp::ParameterType::PARAMETER_NOT_SET) {
+      return true;
+    }
+    if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE_ARRAY) {
+      RCLCPP_ERROR(node->get_logger(),
+                   "Parameter '/hardware_layout.%s' must be a double array.",
+                   parameter_name.c_str());
+      return false;
+    }
+    has_parameter = true;
+    values = parameter.as_double_array();
+    return true;
+  } catch (const std::exception& e) {
+    RCLCPP_WARN(node->get_logger(),
+                "Failed to read '/hardware_layout.%s': %s",
+                parameter_name.c_str(), e.what());
+    return true;
+  }
+}
+
 inline bool loadWorldToFrankaBaseTransform(
     const rclcpp_lifecycle::LifecycleNode::SharedPtr& node,
     const std::string& controller_name,
@@ -47,10 +89,27 @@ inline bool loadWorldToFrankaBaseTransform(
   std::vector<double> rotation_xyzw;
   bool has_translation = false;
   bool has_rotation = false;
-  if (!loadDoubleArrayParameter(node, translation_parameter, has_translation,
-                                translation) ||
-      !loadDoubleArrayParameter(node, rotation_parameter, has_rotation,
-                                rotation_xyzw)) {
+
+  if (!loadDoubleArrayParameterFromHardwareLayout(
+          node, translation_parameter, has_translation, translation) ||
+      !loadDoubleArrayParameterFromHardwareLayout(
+          node, rotation_parameter, has_rotation, rotation_xyzw)) {
+    return false;
+  }
+
+  if (!has_translation && !has_rotation) {
+    if (!loadDoubleArrayParameter(node, translation_parameter, has_translation,
+                                  translation) ||
+        !loadDoubleArrayParameter(node, rotation_parameter, has_rotation,
+                                  rotation_xyzw)) {
+      return false;
+    }
+  } else if (!has_translation || !has_rotation) {
+    RCLCPP_ERROR(
+        node->get_logger(),
+        "%s: both '/hardware_layout.%s' and '/hardware_layout.%s' must be provided.",
+        controller_name.c_str(), translation_parameter.c_str(),
+        rotation_parameter.c_str());
     return false;
   }
 

@@ -26,10 +26,6 @@ real_multi_mode_controller:
     arm_count: 1
     arm_1:
       arm_id: left
-    world_to_franka_base:
-      left:
-        translation: [0.0, 0.0, 0.0]
-        rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
     controllers: ["panda_joint_impedance_controller", "panda_cartesian_impedance_controller"]
     resources:
         panda_joint_impedance_controller: ["left"]
@@ -43,10 +39,6 @@ sim_multi_mode_controller:
     arm_count: 1
     arm_1:
       arm_id: mj_right
-    world_to_franka_base:
-      mj_right:
-        translation: [0.0, 0.0, 0.0]
-        rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
     controllers: ["panda_joint_impedance_controller", "panda_cartesian_impedance_controller"]
     resources:
         panda_joint_impedance_controller: ["mj_right"]

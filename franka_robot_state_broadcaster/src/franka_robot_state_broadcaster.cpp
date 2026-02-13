@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -12,6 +13,7 @@
 #include "hardware_interface/types/hardware_interface_return_values.hpp"
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "rclcpp/clock.hpp"
+#include "rclcpp/parameter_client.hpp"
 #include "rclcpp/qos.hpp"
 #include "rclcpp/qos_event.hpp"
 #include "rclcpp/time.hpp"
@@ -120,6 +122,84 @@ std::array<double, 16> createTransformFromTranslationQuaternion(
   return transform;
 }
 
+bool loadDoubleArrayParameterFromHardwareLayout(
+    const rclcpp_lifecycle::LifecycleNode::SharedPtr& node,
+    const std::string& parameter_name,
+    bool& has_parameter,
+    std::vector<double>& values) {
+  has_parameter = false;
+  values.clear();
+  constexpr auto kTimeout = std::chrono::milliseconds(300);
+  try {
+    auto parameter_client =
+        std::make_shared<rclcpp::SyncParametersClient>(node, "/hardware_layout");
+    if (!parameter_client->wait_for_service(kTimeout)) {
+      return true;
+    }
+    const auto parameters = parameter_client->get_parameters({parameter_name});
+    if (parameters.empty()) {
+      return true;
+    }
+    const auto& parameter = parameters.front();
+    if (parameter.get_type() == rclcpp::ParameterType::PARAMETER_NOT_SET) {
+      return true;
+    }
+    if (parameter.get_type() !=
+        rclcpp::ParameterType::PARAMETER_DOUBLE_ARRAY) {
+      RCLCPP_ERROR(node->get_logger(),
+                   "Parameter '/hardware_layout.%s' must be a double array.",
+                   parameter_name.c_str());
+      return false;
+    }
+    has_parameter = true;
+    values = parameter.as_double_array();
+    return true;
+  } catch (const std::exception& e) {
+    RCLCPP_WARN(node->get_logger(),
+                "Failed to read '/hardware_layout.%s': %s",
+                parameter_name.c_str(), e.what());
+    return true;
+  }
+}
+
+bool loadStringParameterFromHardwareLayout(
+    const rclcpp_lifecycle::LifecycleNode::SharedPtr& node,
+    const std::string& parameter_name,
+    bool& has_parameter,
+    std::string& value) {
+  has_parameter = false;
+  constexpr auto kTimeout = std::chrono::milliseconds(300);
+  try {
+    auto parameter_client =
+        std::make_shared<rclcpp::SyncParametersClient>(node, "/hardware_layout");
+    if (!parameter_client->wait_for_service(kTimeout)) {
+      return true;
+    }
+    const auto parameters = parameter_client->get_parameters({parameter_name});
+    if (parameters.empty()) {
+      return true;
+    }
+    const auto& parameter = parameters.front();
+    if (parameter.get_type() == rclcpp::ParameterType::PARAMETER_NOT_SET) {
+      return true;
+    }
+    if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_STRING) {
+      RCLCPP_ERROR(node->get_logger(),
+                   "Parameter '/hardware_layout.%s' must be a string.",
+                   parameter_name.c_str());
+      return false;
+    }
+    has_parameter = true;
+    value = parameter.as_string();
+    return true;
+  } catch (const std::exception& e) {
+    RCLCPP_WARN(node->get_logger(),
+                "Failed to read '/hardware_layout.%s': %s",
+                parameter_name.c_str(), e.what());
+    return true;
+  }
+}
+
 }  // namespace
 
 namespace franka_robot_state_broadcaster {
@@ -151,10 +231,43 @@ controller_interface::CallbackReturn FrankaRobotStateBroadcaster::on_configure(
   franka_robot_state = std::make_unique<franka_semantic_components::FrankaRobotState>(
       franka_semantic_components::FrankaRobotState(arm_id + "/" + state_interface_name, arm_id));
 
-  const auto translation_param =
-      get_node()->get_parameter("world_to_franka_base.translation").as_double_array();
-  const auto rotation_param =
-      get_node()->get_parameter("world_to_franka_base.rotation_xyzw").as_double_array();
+  const std::string global_translation_param =
+      "world_to_franka_base." + arm_id + ".translation";
+  const std::string global_rotation_param =
+      "world_to_franka_base." + arm_id + ".rotation_xyzw";
+
+  std::vector<double> translation_param;
+  std::vector<double> rotation_param;
+  bool has_global_translation = false;
+  bool has_global_rotation = false;
+  bool has_global_world_frame = false;
+
+  if (!loadDoubleArrayParameterFromHardwareLayout(
+          get_node(), global_translation_param, has_global_translation,
+          translation_param) ||
+      !loadDoubleArrayParameterFromHardwareLayout(
+          get_node(), global_rotation_param, has_global_rotation,
+          rotation_param) ||
+      !loadStringParameterFromHardwareLayout(
+          get_node(), "world_frame_id", has_global_world_frame, world_frame_id_)) {
+    return CallbackReturn::ERROR;
+  }
+
+  if (!has_global_translation && !has_global_rotation) {
+    translation_param =
+        get_node()->get_parameter("world_to_franka_base.translation")
+            .as_double_array();
+    rotation_param =
+        get_node()->get_parameter("world_to_franka_base.rotation_xyzw")
+            .as_double_array();
+  } else if (!has_global_translation || !has_global_rotation) {
+    RCLCPP_ERROR(
+        get_node()->get_logger(),
+        "%s: both '/hardware_layout.%s' and '/hardware_layout.%s' must be set.",
+        arm_id.c_str(), global_translation_param.c_str(),
+        global_rotation_param.c_str());
+    return CallbackReturn::ERROR;
+  }
 
   if (translation_param.size() != 3) {
     RCLCPP_ERROR(get_node()->get_logger(),
@@ -186,6 +299,25 @@ controller_interface::CallbackReturn FrankaRobotStateBroadcaster::on_configure(
       {rotation_param[0], rotation_param[1], rotation_param[2], rotation_param[3]}};
   world_t_base_ =
       createTransformFromTranslationQuaternion(translation, rotation_xyzw);
+
+  if (has_global_translation && has_global_rotation) {
+    if (has_global_world_frame) {
+      RCLCPP_INFO(
+          get_node()->get_logger(),
+          "%s: loaded world_to_franka_base and world_frame_id from /hardware_layout.",
+          arm_id.c_str());
+    } else {
+      RCLCPP_INFO(
+          get_node()->get_logger(),
+          "%s: loaded world_to_franka_base from /hardware_layout and kept local world_frame_id.",
+          arm_id.c_str());
+    }
+  } else {
+    RCLCPP_INFO(
+        get_node()->get_logger(),
+        "%s: /hardware_layout parameters not found, using local controller parameters.",
+        arm_id.c_str());
+  }
 
   try {
     franka_state_publisher = get_node()->create_publisher<franka_msgs::msg::FrankaState>(

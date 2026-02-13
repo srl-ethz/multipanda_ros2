@@ -31,12 +31,14 @@ def generate_launch_description():
     use_fake_hardware_parameter_name = 'use_fake_hardware'
     fake_sensor_commands_parameter_name = 'fake_sensor_commands'
     use_rviz_parameter_name = 'use_rviz'
+    hardware_layout_parameter_name = 'hardware_layout'
 
     robot_ip = LaunchConfiguration(robot_ip_parameter_name)
     load_gripper = LaunchConfiguration(load_gripper_parameter_name)
     use_fake_hardware = LaunchConfiguration(use_fake_hardware_parameter_name)
     fake_sensor_commands = LaunchConfiguration(fake_sensor_commands_parameter_name)
     use_rviz = LaunchConfiguration(use_rviz_parameter_name)
+    hardware_layout = LaunchConfiguration(hardware_layout_parameter_name)
 
     franka_xacro_file = os.path.join(get_package_share_directory('franka_description'), 'robots', 'real',
                                      'panda_arm.urdf.xacro')
@@ -54,6 +56,13 @@ def generate_launch_description():
             'config',
             'real',
             'single_controllers.yaml',
+        ]
+    )
+    hardware_layout_file = PathJoinSubstitution(
+        [
+            FindPackageShare('franka_bringup'),
+            'config',
+            'hardware_layout.yaml',
         ]
     )
 
@@ -79,6 +88,17 @@ def generate_launch_description():
             default_value='false',
             description='Use Franka Gripper as an end-effector, otherwise, the robot is loaded '
                         'without an end-effector.'),
+        DeclareLaunchArgument(
+            hardware_layout_parameter_name,
+            default_value=hardware_layout_file,
+            description='Path to shared world-to-franka base transform parameters.'),
+        Node(
+            package='franka_robot_state_broadcaster',
+            executable='hardware_layout_server',
+            name='hardware_layout',
+            parameters=[hardware_layout],
+            output='screen',
+        ),
         Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',

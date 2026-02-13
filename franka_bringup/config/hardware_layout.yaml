@@ -1,0 +1,25 @@
+hardware_layout:
+  ros__parameters:
+    world_frame_id: world
+    world_to_franka_base:
+      panda:
+        translation: [0.0, 0.0, 0.0]
+        rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+      left:
+        translation: [0.0, 0.26, 0.0]
+        rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+      right:
+        translation: [0.0, -0.26, 0.0]
+        rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+      rl_left:
+        translation: [0.0, 0.26, 0.0]
+        rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+      rl_right:
+        translation: [0.0, -0.26, 0.0]
+        rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+      mj_left:
+        translation: [0.0, 0.26, 0.0]
+        rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+      mj_right:
+        translation: [0.0, -0.26, 0.0]
+        rotation_xyzw: [0.0, 0.0, 0.0, 1.0]

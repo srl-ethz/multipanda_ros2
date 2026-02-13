@@ -50,12 +50,14 @@ def generate_launch_description():
     initial_positions_1_param = 'initial_positions_1'
     initial_positions_2_param = 'initial_positions_2'
     use_rviz_param = 'use_rviz'
+    hardware_layout_param = 'hardware_layout'
 
     arm_id_1 = LaunchConfiguration(arm_id_1_param)
     arm_id_2 = LaunchConfiguration(arm_id_2_param)
     initial_positions_1 = LaunchConfiguration(initial_positions_1_param)
     initial_positions_2 = LaunchConfiguration(initial_positions_2_param)
     use_rviz = LaunchConfiguration(use_rviz_param)
+    hardware_layout = LaunchConfiguration(hardware_layout_param)
 
     # Fixed variables
     load_gripper = True # We make gripper a fixed variable, mainly because parsing the argument 
@@ -71,6 +73,10 @@ def generate_launch_description():
     xml_file = os.path.join(get_package_share_directory('franka_description'), 'mujoco', 'franka', scene_file)
     mjros_config_file = os.path.join(get_package_share_directory('franka_bringup'), 'config', 'sim',
                                      'dual_sim_controllers.yaml')
+    hardware_layout_file = os.path.join(
+        get_package_share_directory('franka_bringup'),
+        'config',
+        'hardware_layout.yaml')
     franka_bringup_path = get_package_share_directory('franka_bringup')
     ns=""
 
@@ -140,6 +146,18 @@ def generate_launch_description():
             default_value='"0.0 -0.785 0.0 -2.356 0.0 1.571 0.785"',
             description='Initial joint positions of robot 2. Must be enclosed in quotes, and in pure number.'
                         'Defaults to the "communication_test" pose.'),
+        DeclareLaunchArgument(
+            hardware_layout_param,
+            default_value=hardware_layout_file,
+            description='Path to shared world-to-franka base transform parameters.'),
+
+        Node(
+            package='franka_robot_state_broadcaster',
+            executable='hardware_layout_server',
+            name='hardware_layout',
+            parameters=[hardware_layout],
+            output='screen',
+        ),
 
         # Mujoco ros2 server launch
         IncludeLaunchDescription(

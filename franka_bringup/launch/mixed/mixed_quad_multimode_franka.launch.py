@@ -30,6 +30,7 @@ def generate_launch_description():
     robot_ip_2_parameter_name = 'robot_ip_2'
     scene_xml_parameter_name = 'scene_xml'
     mj_yaml_parameter_name = 'mj_yaml'
+    hardware_layout_parameter_name = 'hardware_layout'
     
     load_gripper_1_parameter_name = 'load_gripper_1'
     load_gripper_2_parameter_name = 'load_gripper_2'
@@ -60,6 +61,7 @@ def generate_launch_description():
 
     scene_xml = LaunchConfiguration(scene_xml_parameter_name)
     mj_yaml = LaunchConfiguration(mj_yaml_parameter_name)
+    hardware_layout = LaunchConfiguration(hardware_layout_parameter_name)
     
     use_fake_hardware = LaunchConfiguration(use_fake_hardware_parameter_name)
     fake_sensor_commands = LaunchConfiguration(fake_sensor_commands_parameter_name)
@@ -69,6 +71,10 @@ def generate_launch_description():
                                      'mixed_quad_panda_arm.urdf.xacro')
     default_scene_xml_file = os.path.join(get_package_share_directory('franka_description'), 'mujoco', 'franka', 'dual_scene.xml')
     default_mj_yaml_file = os.path.join(get_package_share_directory('franka_bringup'), 'config', 'mujoco', 'mj_objects.yaml')
+    default_hardware_layout_file = os.path.join(
+        get_package_share_directory('franka_bringup'),
+        'config',
+        'hardware_layout.yaml')
     robot_description = Command(
         [FindExecutable(name='xacro'), ' ', franka_xacro_file, 
          ' arm_id_1:=', arm_id_1, ' arm_id_2:=', arm_id_2,
@@ -109,6 +115,10 @@ def generate_launch_description():
             default_value=default_mj_yaml_file,
             description='The path to the mujoco object yaml file that you want to load.'
         ),
+        DeclareLaunchArgument(
+            hardware_layout_parameter_name,
+            default_value=default_hardware_layout_file,
+            description='Path to shared world-to-franka base transform parameters.'),
         DeclareLaunchArgument(
             arm_id_1_parameter_name,
             default_value='rl_left',
@@ -158,6 +168,13 @@ def generate_launch_description():
             default_value='true',
             description='Use Franka Gripper as an end-effector, otherwise, robot 4 is loaded '
                         'without an end-effector.'),
+        Node(
+            package='franka_robot_state_broadcaster',
+            executable='hardware_layout_server',
+            name='hardware_layout',
+            parameters=[hardware_layout],
+            output='screen',
+        ),
         Node(
             package='franka_control2',
             executable='franka_control2_node',

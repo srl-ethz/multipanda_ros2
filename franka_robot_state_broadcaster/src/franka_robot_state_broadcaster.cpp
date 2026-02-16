@@ -176,16 +176,14 @@ std::array<double, 16> createTransformFromTranslationQuaternion(
 
 bool loadDoubleArrayParameterFromHardwareLayout(
     const rclcpp_lifecycle::LifecycleNode::SharedPtr& node,
+    const std::shared_ptr<rclcpp::SyncParametersClient>& parameter_client,
     const std::string& parameter_name,
     bool& has_parameter,
     std::vector<double>& values) {
   has_parameter = false;
   values.clear();
-  constexpr auto kTimeout = std::chrono::milliseconds(300);
   try {
-    auto parameter_client =
-        std::make_shared<rclcpp::SyncParametersClient>(node, "/hardware_layout");
-    if (!parameter_client->wait_for_service(kTimeout)) {
+    if (!parameter_client) {
       return true;
     }
     const auto parameters = parameter_client->get_parameters({parameter_name});
@@ -216,15 +214,13 @@ bool loadDoubleArrayParameterFromHardwareLayout(
 
 bool loadStringParameterFromHardwareLayout(
     const rclcpp_lifecycle::LifecycleNode::SharedPtr& node,
+    const std::shared_ptr<rclcpp::SyncParametersClient>& parameter_client,
     const std::string& parameter_name,
     bool& has_parameter,
     std::string& value) {
   has_parameter = false;
-  constexpr auto kTimeout = std::chrono::milliseconds(300);
   try {
-    auto parameter_client =
-        std::make_shared<rclcpp::SyncParametersClient>(node, "/hardware_layout");
-    if (!parameter_client->wait_for_service(kTimeout)) {
+    if (!parameter_client) {
       return true;
     }
     const auto parameters = parameter_client->get_parameters({parameter_name});
@@ -260,6 +256,7 @@ controller_interface::CallbackReturn FrankaRobotStateBroadcaster::on_init() {
   try {
     auto_declare<std::string>("arm_id", "panda");
     auto_declare<int>("frequency", 30);
+    auto_declare<int>("hardware_layout_wait_ms", 5000);
     auto_declare<std::vector<double>>("world_to_franka_base.translation",
                                       {0.0, 0.0, 0.0});
     auto_declare<std::vector<double>>("world_to_franka_base.rotation_xyzw",
@@ -278,6 +275,15 @@ controller_interface::CallbackReturn FrankaRobotStateBroadcaster::on_configure(
     const rclcpp_lifecycle::State& /*previous_state*/) {
   arm_id = get_node()->get_parameter("arm_id").as_string();
   frequency = get_node()->get_parameter("frequency").as_int();
+  int hardware_layout_wait_ms =
+      get_node()->get_parameter("hardware_layout_wait_ms").as_int();
+  if (hardware_layout_wait_ms < 0) {
+    RCLCPP_WARN(
+        get_node()->get_logger(),
+        "%s: hardware_layout_wait_ms (%d) cannot be negative. Clamping to 0 ms.",
+        arm_id.c_str(), hardware_layout_wait_ms);
+    hardware_layout_wait_ms = 0;
+  }
   world_frame_id_ = get_node()->get_parameter("world_frame_id").as_string();
   last_pub_ = get_node()->now();
   franka_robot_state = std::make_unique<franka_semantic_components::FrankaRobotState>(
@@ -294,18 +300,50 @@ controller_interface::CallbackReturn FrankaRobotStateBroadcaster::on_configure(
   bool has_global_rotation = false;
   bool has_global_world_frame = false;
 
+  rclcpp::NodeOptions hardware_layout_client_node_options;
+  hardware_layout_client_node_options.context(
+      get_node()->get_node_base_interface()->get_context());
+  hardware_layout_client_node_options.use_global_arguments(false);
+  hardware_layout_client_node_options.start_parameter_services(false);
+  hardware_layout_client_node_options.start_parameter_event_publisher(false);
+  const auto hardware_layout_client_node =
+      std::make_shared<rclcpp::Node>(
+          arm_id + "_hardware_layout_client",
+          hardware_layout_client_node_options);
+  auto hardware_layout_client =
+      std::make_shared<rclcpp::SyncParametersClient>(
+          hardware_layout_client_node, "/hardware_layout");
+  const auto hardware_layout_wait_timeout =
+      std::chrono::milliseconds(hardware_layout_wait_ms);
+  if (!hardware_layout_client->wait_for_service(hardware_layout_wait_timeout)) {
+    RCLCPP_WARN(
+        get_node()->get_logger(),
+        "%s: '/hardware_layout/get_parameters' not available after %d ms. "
+        "Global hardware layout overrides will be skipped.",
+        arm_id.c_str(), hardware_layout_wait_ms);
+    hardware_layout_client.reset();
+  }
+
   if (!loadDoubleArrayParameterFromHardwareLayout(
-          get_node(), global_translation_param, has_global_translation,
+          get_node(), hardware_layout_client, global_translation_param, has_global_translation,
           translation_param) ||
       !loadDoubleArrayParameterFromHardwareLayout(
-          get_node(), global_rotation_param, has_global_rotation,
+          get_node(), hardware_layout_client, global_rotation_param, has_global_rotation,
           rotation_param) ||
       !loadStringParameterFromHardwareLayout(
-          get_node(), "world_frame_id", has_global_world_frame, world_frame_id_)) {
+          get_node(), hardware_layout_client, "world_frame_id", has_global_world_frame, world_frame_id_)) {
     return CallbackReturn::ERROR;
   }
 
   if (!has_global_translation && !has_global_rotation) {
+    if (hardware_layout_client) {
+      RCLCPP_WARN(
+          get_node()->get_logger(),
+          "%s: '/hardware_layout.%s' and '/hardware_layout.%s' were not found. "
+          "Falling back to local controller parameters. Check arm_id and key names in hardware_layout.yaml.",
+          arm_id.c_str(), global_translation_param.c_str(),
+          global_rotation_param.c_str());
+    }
     translation_param =
         get_node()->get_parameter("world_to_franka_base.translation")
             .as_double_array();
@@ -370,6 +408,16 @@ controller_interface::CallbackReturn FrankaRobotStateBroadcaster::on_configure(
         "%s: /hardware_layout parameters not found, using local controller parameters.",
         arm_id.c_str());
   }
+
+  const bool using_global_transform = has_global_translation && has_global_rotation;
+  RCLCPP_INFO(
+      get_node()->get_logger(),
+      "%s: world_t_base source=%s world_frame_id='%s' translation=[%.6f, %.6f, %.6f] "
+      "rotation_xyzw=[%.6f, %.6f, %.6f, %.6f]",
+      arm_id.c_str(), using_global_transform ? "/hardware_layout" : "local",
+      world_frame_id_.c_str(),
+      translation_param[0], translation_param[1], translation_param[2],
+      rotation_param[0], rotation_param[1], rotation_param[2], rotation_param[3]);
 
   try {
     franka_state_publisher = get_node()->create_publisher<franka_msgs::msg::FrankaState>(

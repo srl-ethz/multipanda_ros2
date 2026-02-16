@@ -10,6 +10,7 @@ int main(int argc, char** argv) {
   options.automatically_declare_parameters_from_overrides(true);
 
   auto node = std::make_shared<rclcpp::Node>("hardware_layout", options);
+  
   rclcpp::spin(node);
 
   rclcpp::shutdown();

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -37,16 +38,14 @@ inline bool loadDoubleArrayParameter(
 
 inline bool loadDoubleArrayParameterFromHardwareLayout(
     const rclcpp_lifecycle::LifecycleNode::SharedPtr& node,
+    const std::shared_ptr<rclcpp::SyncParametersClient>& parameter_client,
     const std::string& parameter_name,
     bool& has_parameter,
     std::vector<double>& values) {
   has_parameter = false;
   values.clear();
-  constexpr auto kTimeout = std::chrono::milliseconds(300);
   try {
-    auto parameter_client =
-        std::make_shared<rclcpp::SyncParametersClient>(node, "/hardware_layout");
-    if (!parameter_client->wait_for_service(kTimeout)) {
+    if (!parameter_client) {
       return true;
     }
 
@@ -79,6 +78,7 @@ inline bool loadWorldToFrankaBaseTransform(
     const rclcpp_lifecycle::LifecycleNode::SharedPtr& node,
     const std::string& controller_name,
     const std::string& arm_id,
+    const std::shared_ptr<rclcpp::SyncParametersClient>& hardware_layout_client,
     Eigen::Affine3d& world_to_franka_base) {
   const std::string translation_parameter =
       "world_to_franka_base." + arm_id + ".translation";
@@ -91,13 +91,24 @@ inline bool loadWorldToFrankaBaseTransform(
   bool has_rotation = false;
 
   if (!loadDoubleArrayParameterFromHardwareLayout(
-          node, translation_parameter, has_translation, translation) ||
+          node, hardware_layout_client, translation_parameter, has_translation,
+          translation) ||
       !loadDoubleArrayParameterFromHardwareLayout(
-          node, rotation_parameter, has_rotation, rotation_xyzw)) {
+          node, hardware_layout_client, rotation_parameter, has_rotation,
+          rotation_xyzw)) {
     return false;
   }
+  const bool using_global_transform = has_translation && has_rotation;
 
   if (!has_translation && !has_rotation) {
+    if (hardware_layout_client) {
+      RCLCPP_WARN(
+          node->get_logger(),
+          "%s: '/hardware_layout.%s' and '/hardware_layout.%s' were not found for arm '%s'. "
+          "Falling back to local controller parameters.",
+          controller_name.c_str(), translation_parameter.c_str(),
+          rotation_parameter.c_str(), arm_id.c_str());
+    }
     if (!loadDoubleArrayParameter(node, translation_parameter, has_translation,
                                   translation) ||
         !loadDoubleArrayParameter(node, rotation_parameter, has_rotation,
@@ -160,6 +171,14 @@ inline bool loadWorldToFrankaBaseTransform(
   world_to_franka_base.translation() =
       Eigen::Vector3d(translation[0], translation[1], translation[2]);
   world_to_franka_base.linear() = rotation_wxyz.toRotationMatrix();
+  RCLCPP_INFO(
+      node->get_logger(),
+      "%s: world_to_franka_base for '%s' source=%s translation=[%.6f, %.6f, %.6f] "
+      "rotation_xyzw=[%.6f, %.6f, %.6f, %.6f]",
+      controller_name.c_str(), arm_id.c_str(),
+      using_global_transform ? "/hardware_layout" : "local",
+      translation[0], translation[1], translation[2], rotation_xyzw[0],
+      rotation_xyzw[1], rotation_xyzw[2], rotation_xyzw[3]);
   return true;
 }
 
@@ -171,6 +190,42 @@ inline bool loadWorldToFrankaBaseTransformsForResource(
     std::vector<std::string>& arm_ids,
     std::vector<Eigen::Affine3d, Eigen::aligned_allocator<Eigen::Affine3d>>&
         world_to_franka_base) {
+  int hardware_layout_wait_ms = 5000;
+  if (node->has_parameter("hardware_layout_wait_ms")) {
+    hardware_layout_wait_ms =
+        node->get_parameter("hardware_layout_wait_ms").as_int();
+  }
+  if (hardware_layout_wait_ms < 0) {
+    RCLCPP_WARN(
+        node->get_logger(),
+        "%s: hardware_layout_wait_ms (%d) cannot be negative. Clamping to 0 ms.",
+        controller_name.c_str(), hardware_layout_wait_ms);
+    hardware_layout_wait_ms = 0;
+  }
+
+  rclcpp::NodeOptions hardware_layout_client_node_options;
+  hardware_layout_client_node_options.context(
+      node->get_node_base_interface()->get_context());
+  hardware_layout_client_node_options.use_global_arguments(false);
+  hardware_layout_client_node_options.start_parameter_services(false);
+  hardware_layout_client_node_options.start_parameter_event_publisher(false);
+  const auto hardware_layout_client_node =
+      std::make_shared<rclcpp::Node>(
+          std::string(node->get_name()) + "_hardware_layout_client",
+          hardware_layout_client_node_options);
+  auto hardware_layout_client =
+      std::make_shared<rclcpp::SyncParametersClient>(
+          hardware_layout_client_node, "/hardware_layout");
+  if (!hardware_layout_client->wait_for_service(
+          std::chrono::milliseconds(hardware_layout_wait_ms))) {
+    RCLCPP_WARN(
+        node->get_logger(),
+        "%s: '/hardware_layout/get_parameters' not available after %d ms. "
+        "Global hardware layout overrides will be skipped.",
+        controller_name.c_str(), hardware_layout_wait_ms);
+    hardware_layout_client.reset();
+  }
+
   arm_ids = resourceToVector(resource);
   if (arm_ids.size() != expected_arm_count) {
     RCLCPP_ERROR(
@@ -186,7 +241,7 @@ inline bool loadWorldToFrankaBaseTransformsForResource(
   for (const auto& arm_id : arm_ids) {
     Eigen::Affine3d transform;
     if (!loadWorldToFrankaBaseTransform(node, controller_name, arm_id,
-                                        transform)) {
+                                        hardware_layout_client, transform)) {
       return false;
     }
     world_to_franka_base.push_back(transform);

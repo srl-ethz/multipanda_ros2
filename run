@@ -1,124 +1,197 @@
 #!/usr/bin/env bash
 set -e
+set -o pipefail
 
 # *********************************************************
 # One-click development environment start-up
-#   Developed by: Jon Skerlj
-#   Last update: 04.02.2026
-#   Tested using Ubuntu 22.04
+#   Refined container lifecycle logic (exists/running/stopped + DISPLAY mismatch guard)
 # *********************************************************
 
-# Setup Paths
-REPO_PATH=$(git rev-parse --show-toplevel)
-REPO_NAME=$(basename "$REPO_PATH")
+# ------------------------------------------------------------------------------
+# 1) Identity / Paths
+# ------------------------------------------------------------------------------
+REPO_PATH="$(git rev-parse --show-toplevel)"
+REPO_NAME="$(basename "$REPO_PATH")"
 
-# ==============================================================================
-# 1. Path and Identity Setup
-# ==============================================================================
-REPO_PATH=$(git rev-parse --show-toplevel)
-REPO_NAME=$(basename "$REPO_PATH")
 IMAGE_NAME="build-env"
 CONTAINER_NAME="multipanda-container"
 
 # Detect Architecture
-ARCH=$(uname -m)
+ARCH="$(uname -m)"
 case "$ARCH" in
-    x86_64)  TAG_ARCH="amd64" ;;
-    aarch64) TAG_ARCH="arm64" ;;
-    *)       TAG_ARCH="$ARCH" ;;
+  x86_64)  TAG_ARCH="amd64" ;;
+  aarch64) TAG_ARCH="arm64" ;;
+  *)       TAG_ARCH="$ARCH" ;;
 esac
+
 IMAGE_TAG="${IMAGE_NAME}:${REPO_NAME}-${TAG_ARCH}"
 
-# ==============================================================================
-# 2. Hardware Support Checks
-# ==============================================================================
+# ------------------------------------------------------------------------------
+# 2) GPU Support Checks
+# ------------------------------------------------------------------------------
 check_nvidia_gpu() {
-    command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1
+  command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1
 }
 
 check_gpu_support() {
-    docker info 2>/dev/null | grep -q "nvidia"
+  docker info 2>/dev/null | grep -qi "nvidia"
 }
 
-# Auto-detect whether we can provide X11/Display to the container.
-# If DISPLAY is set and xhost +local:docker succeeds, enable X11 mounts.
+# ------------------------------------------------------------------------------
+# 3) X11 auto-detect (current setting)
+# ------------------------------------------------------------------------------
+CURRENT_DISPLAY="${DISPLAY:-}"
 X11_AVAILABLE=false
-if [ -n "$DISPLAY" ] && [ -d /tmp/.X11-unix ]; then
-    # try to grant access; if it fails we treat the environment as headless
+
+if [ -n "$CURRENT_DISPLAY" ] && [ -d /tmp/.X11-unix ]; then
+  if command -v xhost >/dev/null 2>&1; then
     if xhost +local:docker >/dev/null 2>&1; then
-        X11_AVAILABLE=true
-        echo "X11 display detected and xhost configured. Running with display support."
+      X11_AVAILABLE=true
+      echo "X11 display detected and xhost configured. Running with display support."
     else
-        echo "DISPLAY set but xhost failed — falling back to headless mode."
+      echo "DISPLAY set but xhost failed — falling back to headless mode."
     fi
+  else
+    echo "DISPLAY set but xhost not found — falling back to headless mode."
+  fi
 else
-    echo "No X11 display detected — running headless."
+  echo "No X11 display detected — running headless."
 fi
 
-# ==============================================================================
-# 3. Dynamic Argument Construction (Using All Your Flags)
-# ==============================================================================
-# Workspace Path inside container
-WS_SRC="/home/developer/multipanda_ws/src"
-
-# GPU Configuration
-WITH_GPU_CONFIG=()
-if check_nvidia_gpu && check_gpu_support; then
-    if [ "$X11_AVAILABLE" = true ]; then
-        # With display: include display/graphics for OpenGL/RViz
-        WITH_GPU_CONFIG+=(--gpus 'all,"capabilities=compute,utility,graphics,display"')
-    else
-        # Headless: compute/utility only
-        WITH_GPU_CONFIG+=(--gpus 'all,"capabilities=compute,utility"')
-    fi
-    echo "GPU support detected."
-else
-    echo "No GPU support. Using CPU rendering."
-fi
-
-# Prepare envs / volumes depending on X11 availability
+# ------------------------------------------------------------------------------
+# 4) Dynamic args (env/volumes/gpu) based on current X11 setting
+# ------------------------------------------------------------------------------
 DOCKER_ENV=()
 DOCKER_VOLUMES=()
+
 if [ "$X11_AVAILABLE" = true ]; then
-    DOCKER_ENV+=(--env "DISPLAY=$DISPLAY")
-    DOCKER_VOLUMES+=(--volume "/tmp/.X11-unix:/tmp/.X11-unix:rw")
+  DOCKER_ENV+=(--env "DISPLAY=$CURRENT_DISPLAY")
+  DOCKER_VOLUMES+=(--volume "/tmp/.X11-unix:/tmp/.X11-unix:rw")
 else
-    # set offscreen Qt platform to reduce warnings for headless GUI apps (optional)
-    DOCKER_ENV+=(--env "QT_QPA_PLATFORM=offscreen")
+  DOCKER_ENV+=(--env "QT_QPA_PLATFORM=offscreen")
 fi
 
-# ==============================================================================
-# 4. Container Execution
-# ==============================================================================
-if [ "$(docker ps -q -f name=$CONTAINER_NAME)" ]; then
-    echo "$CONTAINER_NAME is already running."
+WITH_GPU_CONFIG=()
+if check_nvidia_gpu && check_gpu_support; then
+  if [ "$X11_AVAILABLE" = true ]; then
+    WITH_GPU_CONFIG+=(--gpus "all,capabilities=compute,utility,graphics,display")
+  else
+    WITH_GPU_CONFIG+=(--gpus "all,capabilities=compute,utility")
+  fi
+  echo "GPU support detected."
 else
-    echo "Launching $CONTAINER_NAME..."
-    
-    docker run -d \
-        --name "$CONTAINER_NAME" \
-        --user "$(id -u):$(id -g)" \
-        --network host \
-        --ipc host \
-        --pid host \
-        --privileged \
-        --tty \
-        --interactive \
-        "${DOCKER_ENV[@]}" \
-        --env "USER=$(id -u)" \
-        --env "ROS_DOMAIN_ID=1" \
-        "${DOCKER_VOLUMES[@]}" \
-        --volume "/dev:/dev" \
-        --volume "$HOME:/host" \
-        --volume "${REPO_PATH}:/home/developer/multipanda_ws/src/" \
-        --ulimit rtprio=99 \
-        --ulimit rttime=-1 \
-        --ulimit memlock=-1 \
-        --cap-add=sys_nice \
-        "${WITH_GPU_CONFIG[@]}" \
-        "$IMAGE_TAG"
+  echo "No GPU support. Using CPU rendering."
 fi
 
-# Enter the container
+# ------------------------------------------------------------------------------
+# 5) Container inspection helpers
+# ------------------------------------------------------------------------------
+container_exists() {
+  docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1
+}
+
+container_is_running() {
+  [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null)" = "true" ]
+}
+
+container_env_lines() {
+  docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER_NAME" 2>/dev/null || true
+}
+
+container_has_display_env() {
+  container_env_lines | grep -q '^DISPLAY='
+}
+
+container_display_value() {
+  container_env_lines | awk -F= '/^DISPLAY=/{print $2; exit}'
+}
+
+container_mount_destinations() {
+  docker inspect -f '{{range .Mounts}}{{println .Destination}}{{end}}' "$CONTAINER_NAME" 2>/dev/null || true
+}
+
+container_has_x11_mount() {
+  container_mount_destinations | grep -qx '/tmp/.X11-unix'
+}
+
+# Treat "container X11 mode" as: has DISPLAY env AND has /tmp/.X11-unix mount
+container_x11_mode() {
+  container_has_display_env && container_has_x11_mount
+}
+
+# ------------------------------------------------------------------------------
+# 6) Requested logic: exists? display mismatch? running? stopped? else run
+# ------------------------------------------------------------------------------
+ensure_container_running() {
+  if container_exists; then
+    # ---- display setting mismatch guard ----
+    existing_x11=false
+    if container_x11_mode; then
+      existing_x11=true
+    fi
+
+    if [ "$existing_x11" != "$X11_AVAILABLE" ]; then
+      echo "container's display environment changed: double check or recreate docker rm \"$CONTAINER_NAME\""
+      echo "  existing: X11=$existing_x11, DISPLAY=$(container_display_value || true)"
+      echo "  current : X11=$X11_AVAILABLE, DISPLAY=${CURRENT_DISPLAY:-<unset>}"
+      return 1
+    fi
+
+    # If both are X11 mode, also guard DISPLAY value changes (e.g. :0 -> :1)
+    if [ "$X11_AVAILABLE" = true ]; then
+      existing_display="$(container_display_value || true)"
+      if [ -n "$existing_display" ] && [ "$existing_display" != "$CURRENT_DISPLAY" ]; then
+        echo "container's display environment changed: double check or recreate docker rm \"$CONTAINER_NAME\""
+        echo "  existing DISPLAY=$existing_display"
+        echo "  current  DISPLAY=$CURRENT_DISPLAY"
+        return 1
+      fi
+    fi
+
+    # ---- running / stopped handling ----
+    if container_is_running; then
+      echo "$CONTAINER_NAME is already running."
+      return 0
+    fi
+
+    echo "$CONTAINER_NAME exists but is stopped — starting..."
+    docker start "$CONTAINER_NAME" >/dev/null
+    return 0
+  fi
+
+  # ---- does not exist: docker run ----
+  echo "Launching $CONTAINER_NAME..."
+
+  docker run -d \
+    --name "$CONTAINER_NAME" \
+    --user "$(id -u):$(id -g)" \
+    --network host \
+    --ipc host \
+    --pid host \
+    --privileged \
+    --tty \
+    --interactive \
+    "${DOCKER_ENV[@]}" \
+    --env "USER=$(id -u)" \
+    --env "ROS_DOMAIN_ID=1" \
+    "${DOCKER_VOLUMES[@]}" \
+    --volume "/dev:/dev" \
+    --volume "$HOME:/host" \
+    --volume "${REPO_PATH}:/home/developer/multipanda_ws/src/" \
+    --ulimit rtprio=99 \
+    --ulimit rttime=-1 \
+    --ulimit memlock=-1 \
+    --cap-add=sys_nice \
+    "${WITH_GPU_CONFIG[@]}" \
+    "$IMAGE_TAG"
+
+  return 0
+}
+
+ensure_container_running
+
+# ------------------------------------------------------------------------------
+# 7) Optional: enter the container (comment out if you only want start/run behavior)
+# ------------------------------------------------------------------------------
 echo "➡ Entering environment..."
-docker exec -it --user developer "$CONTAINER_NAME" /bin/bash -c "source /home/developer/.bashrc && bash"
+docker exec -it --user developer "$CONTAINER_NAME" /bin/bash -lc "source /home/developer/.bashrc && bash"

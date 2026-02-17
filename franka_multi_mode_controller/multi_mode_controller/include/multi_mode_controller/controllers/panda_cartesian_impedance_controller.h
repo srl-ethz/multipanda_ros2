@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+#include <mutex>
 
 #include <Eigen/Dense>
 #include <Eigen/StdVector>
@@ -48,12 +49,17 @@ private:
   void startROSComImpl() override final;
   void stopROSComImpl() override final;
   void endEffectorPoseCmdCallback(const geometry_msgs::msg::PoseStamped& msg);
+  void updateWaypointTowardsGoal();
 
   std::vector<std::string> arm_ids_;
   std::vector<Eigen::Affine3d, Eigen::aligned_allocator<Eigen::Affine3d>>
       world_to_franka_base_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr
       end_effector_pose_cmd_sub_;
+  rclcpp::TimerBase::SharedPtr waypoint_timer_;
+  Pose goal_pose_;
+  bool has_goal_{false};
+  std::mutex goal_mutex_;
 
 };
 }

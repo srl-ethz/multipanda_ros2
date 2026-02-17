@@ -1,5 +1,9 @@
 #include <multi_mode_controller/controllers/dual_cartesian_impedance_controller.h>
 
+#include <algorithm>
+#include <chrono>
+#include <limits>
+
 #include <multi_mode_controller/utils/controller_factory.h>
 #include <multi_mode_controller/utils/world_frame_transforms.h>
 
@@ -18,6 +22,10 @@ using ConfigResponse = multi_mode_control_msgs::srv::SetCartesianImpedance::Resp
 using Controller = DualCartesianImpedanceController;
 
 namespace {
+constexpr double kMaxPositionStep = 0.1;
+constexpr double kMaxOrientationStep = 0.15;
+constexpr auto kWaypointUpdatePeriod = std::chrono::milliseconds(10);
+
 geometry_msgs::msg::Pose toWorldPose(
     const PandaCartesianImpedanceControllerPose& pose,
     const Eigen::Affine3d& world_to_franka_base) {
@@ -46,6 +54,53 @@ geometry_msgs::msg::Pose toWorldPose(
   world_pose.orientation.z = world_orientation.z();
   return world_pose;
 }
+
+Quaterniond normalizedQuaternion(const Quaterniond& q) {
+  if (q.norm() < std::numeric_limits<double>::epsilon()) {
+    return Quaterniond::Identity();
+  }
+  Quaterniond normalized = q;
+  normalized.normalize();
+  return normalized;
+}
+
+PandaCartesianImpedanceControllerPose computeWaypointPose(
+    const PandaCartesianImpedanceControllerPose& current_raw,
+    const PandaCartesianImpedanceControllerPose& goal,
+    const PandaCartesianImpedanceControllerPose& offset,
+    bool& reached_goal) {
+  PandaCartesianImpedanceControllerPose waypoint = goal;
+  const Vector3d current_position = current_raw.position - offset.position;
+  const Vector3d delta_position = goal.position - current_position;
+  const double position_distance = delta_position.norm();
+
+  const Quaterniond current_orientation = normalizedQuaternion(current_raw.orientation);
+  const Quaterniond goal_orientation = normalizedQuaternion(goal.orientation);
+  const double orientation_distance =
+      current_orientation.angularDistance(goal_orientation);
+
+  double step_scale = 1.0;
+  if (position_distance > std::numeric_limits<double>::epsilon()) {
+    step_scale = std::min(step_scale, kMaxPositionStep / position_distance);
+  }
+  if (orientation_distance > std::numeric_limits<double>::epsilon()) {
+    step_scale = std::min(step_scale, kMaxOrientationStep / orientation_distance);
+  }
+  step_scale = std::clamp(step_scale, 0.0, 1.0);
+
+  if (step_scale >= 1.0) {
+    waypoint.position = goal.position;
+    waypoint.orientation = goal_orientation;
+    reached_goal = true;
+  } else {
+    waypoint.position = current_position + step_scale * delta_position;
+    waypoint.orientation = current_orientation.slerp(step_scale, goal_orientation);
+    waypoint.orientation.normalize();
+    reached_goal = false;
+  }
+  waypoint.q_n = goal.q_n;
+  return waypoint;
+}
 }  // namespace
 
 
@@ -71,10 +126,15 @@ void Controller::startROSComImpl() {
               this->endEffectorPoseCmdCallback(i, msg);
             }));
   }
+  waypoint_timer_ = PandaControllerBase<Parameters, Pose>::node_->create_wall_timer(
+      kWaypointUpdatePeriod, [this]() { this->updateWaypointTowardsGoal(); });
 }
 
 void Controller::stopROSComImpl() {
+  waypoint_timer_.reset();
   end_effector_pose_cmd_subs_.clear();
+  std::lock_guard<std::mutex> lock(goal_mutex_);
+  has_goal_ = false;
 }
 
 void Controller::endEffectorPoseCmdCallback(std::size_t arm_index,
@@ -110,6 +170,7 @@ void Controller::endEffectorPoseCmdCallback(std::size_t arm_index,
 bool Controller::desiredPoseCallbackImpl(Pose& p_d, 
                                          const Pose& p,
                                          const GoalMsg& msg) {
+  Pose goal_pose;
   const Vector3d left_world_position(msg.l_pose.position.x,
                                      msg.l_pose.position.y,
                                      msg.l_pose.position.z);
@@ -128,13 +189,13 @@ bool Controller::desiredPoseCallbackImpl(Pose& p_d,
   if (!transformWorldPoseToFrankaBase(left_world_position,
                                       left_world_orientation,
                                       world_to_franka_base_.at(0),
-                                      p_d.poses[0].position,
-                                      p_d.poses[0].orientation) ||
+                                      goal_pose.poses[0].position,
+                                      goal_pose.poses[0].orientation) ||
       !transformWorldPoseToFrankaBase(right_world_position,
                                       right_world_orientation,
                                       world_to_franka_base_.at(1),
-                                      p_d.poses[1].position,
-                                      p_d.poses[1].orientation)) {
+                                      goal_pose.poses[1].position,
+                                      goal_pose.poses[1].orientation)) {
     auto& clk = *PandaControllerBase<Parameters, Pose>::node_->get_clock();
     const auto& logger = PandaControllerBase<Parameters, Pose>::node_->get_logger();
     RCLCPP_WARN_THROTTLE(
@@ -143,32 +204,54 @@ bool Controller::desiredPoseCallbackImpl(Pose& p_d,
     return false;
   }
 
-  if ((p_d.poses[0].position+PandaControllerBase<Parameters, Pose>::getOffset().poses[0].position-p.poses[0].position).norm() > 0.1 ||
-      (p_d.poses[1].position+PandaControllerBase<Parameters, Pose>::getOffset().poses[1].position-p.poses[1].position).norm() > 0.1) {
-    auto& clk = *PandaControllerBase<Parameters, Pose>::node_->get_clock();
-    const auto& logger = PandaControllerBase<Parameters, Pose>::node_->get_logger();
-    RCLCPP_WARN_THROTTLE(logger, clk, 1000, "dual_cartesian_impedance_controller: Discarding "
-        "target pose that is too far away from current pose (left: %f m, right: %f m, allowed "
-        "maximum is 0.1 m).",
-        (p_d.poses[0].position+PandaControllerBase<Parameters, Pose>::getOffset().poses[0].position-p.poses[0].position).norm(),
-        (p_d.poses[1].position+PandaControllerBase<Parameters, Pose>::getOffset().poses[1].position-p.poses[1].position).norm());
-    return false;
+  goal_pose.poses[0].q_n = Eigen::Map<const Vector7d>(msg.l_q_n.data());
+  goal_pose.poses[1].q_n = Eigen::Map<const Vector7d>(msg.r_q_n.data());
+
+  const Pose offset = PandaControllerBase<Parameters, Pose>::getOffset();
+  bool left_reached_goal = false;
+  bool right_reached_goal = false;
+  p_d.poses[0] =
+      computeWaypointPose(p.poses[0], goal_pose.poses[0], offset.poses[0], left_reached_goal);
+  p_d.poses[1] =
+      computeWaypointPose(p.poses[1], goal_pose.poses[1], offset.poses[1], right_reached_goal);
+
+  {
+    std::lock_guard<std::mutex> lock(goal_mutex_);
+    goal_pose_ = goal_pose;
+    has_goal_ = !(left_reached_goal && right_reached_goal);
   }
 
-  if (p.poses[0].orientation.angularDistance(p_d.poses[0].orientation) > 0.15 ||
-      p.poses[1].orientation.angularDistance(p_d.poses[1].orientation) > 0.15) {
+  if (!(left_reached_goal && right_reached_goal)) {
     auto& clk = *PandaControllerBase<Parameters, Pose>::node_->get_clock();
     const auto& logger = PandaControllerBase<Parameters, Pose>::node_->get_logger();
-    RCLCPP_WARN_THROTTLE(logger, clk, 1000, "dual_cartesian_impedance_controller: Discarding "
-        "target pose that rotates too far away from current pose (left: %f rad, right: %f rad, "
-        "allowed maximum is 0.15 rad).",
-        p.poses[0].orientation.angularDistance(p_d.poses[0].orientation),
-        p.poses[1].orientation.angularDistance(p_d.poses[1].orientation));
-    return false;
+    RCLCPP_WARN_THROTTLE(
+        logger, clk, 1000,
+        "dual_cartesian_impedance_controller: Target pose exceeds step limits, tracking intermediate waypoint.");
   }
-  p_d.poses[0].q_n = Eigen::Map<const Vector7d>(msg.l_q_n.data());
-  p_d.poses[1].q_n = Eigen::Map<const Vector7d>(msg.r_q_n.data());
   return true;
+}
+
+void Controller::updateWaypointTowardsGoal() {
+  std::lock_guard<std::mutex> lock(goal_mutex_);
+  if (!has_goal_) {
+    return;
+  }
+
+  const Pose current_pose = this->getCurrentPose();
+  const Pose offset = PandaControllerBase<Parameters, Pose>::getOffset();
+  Pose waypoint;
+  bool left_reached_goal = false;
+  bool right_reached_goal = false;
+  waypoint.poses[0] = computeWaypointPose(current_pose.poses[0],
+                                          goal_pose_.poses[0],
+                                          offset.poses[0],
+                                          left_reached_goal);
+  waypoint.poses[1] = computeWaypointPose(current_pose.poses[1],
+                                          goal_pose_.poses[1],
+                                          offset.poses[1],
+                                          right_reached_goal);
+  this->setDesiredPoseBuffered(waypoint);
+  has_goal_ = !(left_reached_goal && right_reached_goal);
 }
 
 bool Controller::setParametersCallbackImpl(Parameters& p_d, const Parameters& p,

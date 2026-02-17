@@ -10,6 +10,7 @@
   <exec_depend>franka_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>multi_mode_control_msgs</exec_depend>
+  <exec_depend>rcl_interfaces</exec_depend>
   <exec_depend>rclpy</exec_depend>
 
   <test_depend>ament_copyright</test_depend>

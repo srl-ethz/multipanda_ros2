@@ -20,6 +20,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'cartesian_pose_publisher = franka_simple_publishers.cartesian_pose_publisher:main',
             'mmc_cartesian_keyboard = franka_simple_publishers.mmc_cartesian_keyboard:main',
         ],
     },

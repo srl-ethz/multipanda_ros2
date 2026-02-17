@@ -26,7 +26,8 @@ set(THIS_PACKAGE_INCLUDE_DEPENDS
     rclcpp_lifecycle
     rcutils
     realtime_tools
-    sensor_msgs)
+    sensor_msgs
+    tf2_ros)
 
 find_package(ament_cmake REQUIRED)
 

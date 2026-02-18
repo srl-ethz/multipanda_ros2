@@ -31,6 +31,26 @@ if _LAUNCH_ROOT not in sys.path:
 from common.hardware_layout_utils import resolve_world_to_base_poses
 
 
+def concatenate_ns(ns1, ns2, absolute=False):
+    if(len(ns1) == 0):
+        return ns2
+    if(len(ns2) == 0):
+        return ns1
+
+    # check for /s at the end and start
+    if(ns1[0] == '/'):
+        ns1 = ns1[1:]
+    if(ns1[-1] == '/'):
+        ns1 = ns1[:-1]
+    if(ns2[0] == '/'):
+        ns2 = ns2[1:]
+    if(ns2[-1] == '/'):
+        ns2 = ns2[:-1]
+    if(absolute):
+        ns1 = '/' + ns1
+    return ns1 + '/' + ns2
+
+
 def _create_description_nodes(
     context,
     *,
@@ -42,6 +62,7 @@ def _create_description_nodes(
     fake_sensor_commands,
     hardware_layout,
     franka_controllers,
+    ns,
 ):
     arm_id_1_value = arm_id_1.perform(context)
     robot_ip_1_value = robot_ip_1.perform(context)
@@ -87,6 +108,7 @@ def _create_description_nodes(
             executable='ros2_control_node',
             parameters=[{'robot_description': robot_description}, franka_controllers],
             remappings=[('joint_states', 'franka/joint_states')],
+            namespace=ns,
             output={
                 'stdout': 'screen',
                 'stderr': 'screen',
@@ -98,6 +120,7 @@ def _create_description_nodes(
             package='robot_state_publisher',
             executable='robot_state_publisher',
             name='robot_state_publisher',
+            namespace=ns,
             output='screen',
             parameters=[{'robot_description': robot_description}],
         ),
@@ -146,6 +169,13 @@ def generate_launch_description():
             'hardware_layout.yaml',
         ]
     )
+    ns = 'paco'
+    controller_manager_name = concatenate_ns(ns, 'controller_manager', True)
+    robot_description_topic = concatenate_ns(ns, 'robot_description', True)
+    joint_state_sources = [
+        concatenate_ns(ns, 'franka/joint_states', True),
+        concatenate_ns(ns, 'panda_gripper/joint_states', True),
+    ]
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -177,6 +207,7 @@ def generate_launch_description():
             hardware_layout_parameter_name,
             default_value=hardware_layout_file,
             description='Path to shared world-to-franka base transform parameters.'),
+        # Keep this global; the broadcaster currently resolves '/hardware_layout' explicitly.
         Node(
             package='franka_robot_state_broadcaster',
             executable='hardware_layout_server',
@@ -195,33 +226,38 @@ def generate_launch_description():
                 'fake_sensor_commands': fake_sensor_commands,
                 'hardware_layout': hardware_layout,
                 'franka_controllers': franka_controllers,
+                'ns': ns,
             },
         ),
         Node(
             package='joint_state_publisher',
             executable='joint_state_publisher',
             name='joint_state_publisher',
+            namespace=ns,
             parameters=[
-                {'source_list': ['franka/joint_states', 'panda_gripper/joint_states'],
+                {'source_list': joint_state_sources,
                  'rate': 30}],
         ),
         Node(
             package='controller_manager',
             executable='spawner',
-            arguments=['joint_state_broadcaster'],
+            namespace=ns,
+            arguments=['joint_state_broadcaster', '-c', controller_manager_name],
             output='screen',
         ),
         Node(
             package='controller_manager',
             executable='spawner',
-            arguments=['multi_mode_controller'],
+            namespace=ns,
+            arguments=['multi_mode_controller', '-c', controller_manager_name],
             output='screen',
             condition=UnlessCondition(use_fake_hardware),
         ),
         Node(
             package='controller_manager',
             executable='spawner',
-            arguments=['franka_robot_state_broadcaster'],
+            namespace=ns,
+            arguments=['franka_robot_state_broadcaster', '-c', controller_manager_name],
             output='screen',
             condition=UnlessCondition(use_fake_hardware),
         ),
@@ -245,6 +281,7 @@ def generate_launch_description():
              executable='rviz2',
              name='rviz2',
              arguments=['--display-config', rviz_file],
+             remappings=[('/robot_description', robot_description_topic)],
              condition=IfCondition(use_rviz)
              )
 

@@ -24,7 +24,7 @@
   </link>
 
   <xacro:include filename="$(find franka_description)/robots/common/panda_arm.xacro"/>
-  <xacro:panda_arm arm_id="$(arg arm_id)" connected_to="world" rpy="$(arg world_to_base_rpy)" xyz="$(arg world_to_base_xyz)" safety_distance="0.03"/>
+  <xacro:panda_arm arm_id="$(arg arm_id)" description_pkg="viz/models/franka_panda/" connected_to="world" rpy="$(arg world_to_base_rpy)" xyz="$(arg world_to_base_xyz)" safety_distance="0.03"/>
 
   <xacro:if value="$(arg hand)">
     <xacro:include filename="$(find franka_description)/robots/common/hand.xacro"/>

@@ -33,8 +33,8 @@
   <xacro:panda_arm arm_id="$(arg arm_id_1)" connected_to="world" rpy="${-90 * pi/180} 0 ${-90 * pi/180}"  xyz="-143.26e-3 +600e-3 924.51e-3" safety_distance="0.03"/>
   <xacro:panda_arm arm_id="$(arg arm_id_2)" connected_to="world" rpy="${+90 * pi/180} 0 ${+90 * pi/180}"  xyz="-143.26e-3 -600e-3 924.51e-3" safety_distance="0.03"/>
   -->
-  <xacro:panda_arm arm_id="$(arg arm_id_1)" connected_to="world" rpy="$(arg world_to_base_rpy_1)"  xyz="$(arg world_to_base_xyz_1)" safety_distance="0.03"/>
-  <xacro:panda_arm arm_id="$(arg arm_id_2)" connected_to="world" rpy="$(arg world_to_base_rpy_2)"  xyz="$(arg world_to_base_xyz_2)" safety_distance="0.03"/>
+  <xacro:panda_arm arm_id="$(arg arm_id_1)"  description_pkg="viz/models/franka_panda/" connected_to="world" rpy="$(arg world_to_base_rpy_1)"  xyz="$(arg world_to_base_xyz_1)" safety_distance="0.03"/>
+  <xacro:panda_arm arm_id="$(arg arm_id_2)"  description_pkg="viz/models/franka_panda/" connected_to="world" rpy="$(arg world_to_base_rpy_2)"  xyz="$(arg world_to_base_xyz_2)" safety_distance="0.03"/>
 
   <xacro:if value="$(arg hand_1)">
     <xacro:include filename="$(find franka_description)/robots/common/hand.xacro"/>

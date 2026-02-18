@@ -16,22 +16,22 @@ controller_manager:
 
 franka_robot_state_broadcaster:
   ros__parameters:
-    arm_id: panda
+    arm_id: right
 
 franka_robot_model_broadcaster:
   ros__parameters:
-    arm_id: panda
+    arm_id: right
     
 multi_mode_controller:
   ros__parameters:
     arm_count: 1
     arm_1:
-      arm_id: panda
+      arm_id: right
     controllers: ["panda_joint_impedance_controller", "panda_cartesian_impedance_controller"]
     resources:
-        panda_joint_impedance_controller: ["panda"]
-        panda_cartesian_impedance_controller: ["panda"]
+        panda_joint_impedance_controller: ["right"]
+        panda_cartesian_impedance_controller: ["right"]
     start_controllers:
         names: ["panda_cartesian_impedance_controller"]
         resources:
-            panda_cartesian_impedance_controller: ["panda"]
+            panda_cartesian_impedance_controller: ["right"]

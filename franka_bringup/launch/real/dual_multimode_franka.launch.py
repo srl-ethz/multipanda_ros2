@@ -197,10 +197,10 @@ def generate_launch_description():
         concatenate_ns(ns, 'franka/joint_states', True),
         concatenate_ns(ns, 'panda_gripper/joint_states', True),
     ]
-    # rl_left_state_srv_name = concatenate_ns(ns, 'rl_left/get_robot_states', True)
-    # rl_left_goal_topic = concatenate_ns(ns, 'rl_left/panda_joint_impedance_controller/desired_pose', True)
-    # rl_right_state_srv_name = concatenate_ns(ns, 'rl_right/get_robot_states', True)
-    # rl_right_goal_topic = concatenate_ns(ns, 'rl_right/panda_joint_impedance_controller/desired_pose', True)
+    # left_state_srv_name = concatenate_ns(ns, 'left/get_robot_states', True)
+    # left_goal_topic = concatenate_ns(ns, 'left/panda_joint_impedance_controller/desired_pose', True)
+    # right_state_srv_name = concatenate_ns(ns, 'right/get_robot_states', True)
+    # right_goal_topic = concatenate_ns(ns, 'right/panda_joint_impedance_controller/desired_pose', True)
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -211,11 +211,11 @@ def generate_launch_description():
             description='Hostname or IP address of robot 2.'),
         DeclareLaunchArgument(
             arm_id_1_parameter_name,
-            default_value="rl_left",
+            default_value="left",
             description='Unique arm ID of robot 1.'),
         DeclareLaunchArgument(
             arm_id_2_parameter_name,
-            default_value="rl_right",
+            default_value="right",
             description='Unique arm ID of robot 2.'),
         DeclareLaunchArgument(
             use_rviz_parameter_name,
@@ -297,49 +297,49 @@ def generate_launch_description():
             package='controller_manager',
             executable='spawner',
             namespace=ns,
-            arguments=['rl_left_state_broadcaster', '-c', controller_manager_name],
+            arguments=['left_state_broadcaster', '-c', controller_manager_name],
             output='screen',
         ),
         Node(
             package='controller_manager',
             executable='spawner',
             namespace=ns,
-            arguments=['rl_right_state_broadcaster', '-c', controller_manager_name],
+            arguments=['right_state_broadcaster', '-c', controller_manager_name],
             output='screen',
         ),
         Node(
             package='controller_manager',
             executable='spawner',
             namespace=ns,
-            arguments=['rl_left_model_broadcaster', '-c', controller_manager_name],
+            arguments=['left_model_broadcaster', '-c', controller_manager_name],
             output='screen',
         ),
         Node(
             package='controller_manager',
             executable='spawner',
             namespace=ns,
-            arguments=['rl_right_model_broadcaster', '-c', controller_manager_name],
+            arguments=['right_model_broadcaster', '-c', controller_manager_name],
             output='screen',
         ),
         # Node(
         #     package="panda_motion_generators",
         #     executable="panda_poly_c2_joint_motion_generator_node",
         #     namespace=ns,
-        #     arguments=["rl_left_joint_via_motion",
-        #                rl_left_state_srv_name,
+        #     arguments=["left_joint_via_motion",
+        #                left_state_srv_name,
         #                "real_multi_mode_controller",
         #                "panda_joint_impedance_controller",
-        #                rl_left_goal_topic]
+        #                left_goal_topic]
         # ),
         # Node(
         #     package="panda_motion_generators",
         #     executable="panda_poly_c2_joint_motion_generator_node",
         #     namespace=ns,
-        #     arguments=["rl_right_joint_via_motion",
-        #                rl_right_state_srv_name,
+        #     arguments=["right_joint_via_motion",
+        #                right_state_srv_name,
         #                "real_multi_mode_controller",
         #                "panda_joint_impedance_controller",
-        #                rl_right_goal_topic]
+        #                right_goal_topic]
         # ),
         # IncludeLaunchDescription(
         #     PythonLaunchDescriptionSource([PathJoinSubstitution(

@@ -11,15 +11,29 @@ hardware_layout:
       right:
         translation: [0.0, -0.26, 0.0]
         rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
-      rl_left:
-        translation: [0.0, 0.26, 0.0]
-        rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
-      rl_right:
-        translation: [0.0, -0.26, 0.0]
-        rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+      # MuJoCo stores quaternions as wxyz in XML, but this parameter is xyzw.
       mj_left:
-        translation: [0.0, 0.26, 0.0]
-        rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+        translation: [0.0, 0.06, 0.06]
+        rotation_xyzw: [-0.3826834323650898, 0.0, 0.0, 0.9238795325112867]
       mj_right:
-        translation: [0.0, -0.26, 0.0]
-        rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+        translation: [0.0, -0.06, 0.06]
+        rotation_xyzw: [0.3826834323650898, 0.0, 0.0, 0.9238795325112867]
+    default_pose_world:
+      panda:
+        translation: [0.3, 0.0, 0.59]
+        rotation_xyzw: [1.0, 0.0, 0.0, 0.0]
+      left:
+        translation: [0.3, 0.0, 0.59]
+        rotation_xyzw: [1.0, 0.0, 0.0, 0.0]
+      right:
+        translation: [0.3, 0.0, 0.59]
+        rotation_xyzw: [1.0, 0.0, 0.0, 0.0]
+      # MuJoCo stores quaternions as wxyz in XML, but this parameter is xyzw.
+      mj_left:
+        translation: [0.3, 0.3, 0.42]
+        rotation_xyzw: [0.707, 0.0, 0.0, 0.707]
+      mj_right:
+        translation: [0.3, -0.3, 0.42]
+        rotation_xyzw: [-0.707, 0.0, 0.0, 0.707]
+
+

@@ -183,7 +183,7 @@ def generate_launch_description():
             description='Hostname or IP address of robot 1.'),
         DeclareLaunchArgument(
             arm_id_1_parameter_name,
-            default_value="panda",
+            default_value="right",
             description='Unique arm ID of robot 1.'),
         DeclareLaunchArgument(
             use_rviz_parameter_name,

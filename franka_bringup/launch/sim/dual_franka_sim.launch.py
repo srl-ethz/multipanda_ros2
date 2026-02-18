@@ -14,9 +14,7 @@
 
 
 import os
-from math import asin, atan2, copysign, pi
-
-import yaml
+import sys
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -25,6 +23,12 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import FrontendLaunchDescriptionSource
 from launch.substitutions import Command, FindExecutable, LaunchConfiguration
 from launch_ros.actions import Node
+
+_LAUNCH_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+if _LAUNCH_ROOT not in sys.path:
+    sys.path.insert(0, _LAUNCH_ROOT)
+
+from common.hardware_layout_utils import resolve_world_to_base_poses
 
 
 def concatenate_ns(ns1, ns2, absolute=False):
@@ -47,49 +51,6 @@ def concatenate_ns(ns1, ns2, absolute=False):
     return ns1 + '/' + ns2
 
 
-def _format_vector(values, expected_length, key_name):
-    if not isinstance(values, (list, tuple)) or len(values) != expected_length:
-        raise ValueError(f'Expected {expected_length} values for "{key_name}", got: {values}')
-    return ' '.join(f'{float(value):.16g}' for value in values)
-
-
-def _quaternion_xyzw_to_rpy(rotation_xyzw):
-    if not isinstance(rotation_xyzw, (list, tuple)) or len(rotation_xyzw) != 4:
-        raise ValueError(f'Expected 4 values for "rotation_xyzw", got: {rotation_xyzw}')
-    x, y, z, w = [float(value) for value in rotation_xyzw]
-
-    sinr_cosp = 2.0 * (w * x + y * z)
-    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
-    roll = atan2(sinr_cosp, cosr_cosp)
-
-    sinp = 2.0 * (w * y - z * x)
-    if abs(sinp) >= 1.0:
-        pitch = copysign(pi / 2.0, sinp)
-    else:
-        pitch = asin(sinp)
-
-    siny_cosp = 2.0 * (w * z + x * y)
-    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-    yaw = atan2(siny_cosp, cosy_cosp)
-    return [roll, pitch, yaw]
-
-
-def _resolve_world_to_base_pose(world_to_franka_base, arm_id):
-    if arm_id not in world_to_franka_base:
-        raise KeyError(
-            f'No world_to_franka_base entry for arm id "{arm_id}". '
-            f'Available ids: {sorted(world_to_franka_base.keys())}'
-        )
-
-    transform = world_to_franka_base[arm_id]
-    translation = transform['translation']
-    rotation_xyzw = transform['rotation_xyzw']
-
-    world_to_base_xyz = _format_vector(translation, 3, 'translation')
-    world_to_base_rpy = _format_vector(_quaternion_xyzw_to_rpy(rotation_xyzw), 3, 'rpy')
-    return world_to_base_xyz, world_to_base_rpy
-
-
 def _create_robot_state_publisher(
     context,
     *,
@@ -106,20 +67,15 @@ def _create_robot_state_publisher(
     arm_id_2_value = arm_id_2.perform(context)
     initial_positions_1_value = initial_positions_1.perform(context)
     initial_positions_2_value = initial_positions_2.perform(context)
-    hardware_layout_file = os.path.expanduser(hardware_layout.perform(context))
+    hardware_layout_file = hardware_layout.perform(context)
 
     try:
-        with open(hardware_layout_file, 'r', encoding='utf-8') as file:
-            layout_data = yaml.safe_load(file) or {}
-        world_to_franka_base = layout_data['hardware_layout']['ros__parameters']['world_to_franka_base']
-        world_to_base_xyz_1, world_to_base_rpy_1 = _resolve_world_to_base_pose(
-            world_to_franka_base,
-            arm_id_1_value,
+        world_to_base_poses = resolve_world_to_base_poses(
+            hardware_layout_file,
+            [arm_id_1_value, arm_id_2_value],
         )
-        world_to_base_xyz_2, world_to_base_rpy_2 = _resolve_world_to_base_pose(
-            world_to_franka_base,
-            arm_id_2_value,
-        )
+        world_to_base_xyz_1, world_to_base_rpy_1 = world_to_base_poses[arm_id_1_value]
+        world_to_base_xyz_2, world_to_base_rpy_2 = world_to_base_poses[arm_id_2_value]
     except (OSError, KeyError, TypeError, ValueError) as error:
         raise RuntimeError(
             f'Failed to resolve world_to_franka_base for "{arm_id_1_value}" and "{arm_id_2_value}" '

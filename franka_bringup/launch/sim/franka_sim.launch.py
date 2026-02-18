@@ -1,14 +1,21 @@
+import os
+import sys
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription
-from launch.launch_description_sources import FrontendLaunchDescriptionSource
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.conditions import IfCondition
+from launch.launch_description_sources import FrontendLaunchDescriptionSource
 from launch.substitutions import Command, FindExecutable, LaunchConfiguration
 from launch_ros.actions import Node
-from ament_index_python.packages import get_package_share_directory
-from math import pi
-import os
 
-import xacro
+_LAUNCH_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+if _LAUNCH_ROOT not in sys.path:
+    sys.path.insert(0, _LAUNCH_ROOT)
+
+from common.hardware_layout_utils import resolve_world_to_base_poses
+
+
 def concatenate_ns(ns1, ns2, absolute=False):
     
     if(len(ns1) == 0):
@@ -28,6 +35,59 @@ def concatenate_ns(ns1, ns2, absolute=False):
     if(absolute):
         ns1 = '/' + ns1
     return ns1 + '/' + ns2
+
+
+def _create_robot_state_publisher(
+    context,
+    *,
+    franka_xacro_file,
+    arm_id,
+    initial_positions,
+    hardware_layout,
+    load_gripper,
+    ns,
+):
+    arm_id_value = arm_id.perform(context)
+    initial_positions_value = initial_positions.perform(context)
+    hardware_layout_file = hardware_layout.perform(context)
+
+    try:
+        world_to_base_xyz, world_to_base_rpy = resolve_world_to_base_poses(
+            hardware_layout_file,
+            [arm_id_value],
+        )[arm_id_value]
+    except (OSError, KeyError, TypeError, ValueError) as error:
+        raise RuntimeError(
+            f'Failed to resolve world_to_franka_base for "{arm_id_value}" '
+            f'from "{hardware_layout_file}": {error}'
+        ) from error
+
+    robot_description = Command(
+        [
+            FindExecutable(name='xacro'),
+            ' ',
+            franka_xacro_file,
+            ' arm_id:=',
+            arm_id_value,
+            ' hand:=',
+            str(load_gripper).lower(),
+            ' initial_positions:=',
+            initial_positions_value,
+            f' world_to_base_xyz:="{world_to_base_xyz}"',
+            f' world_to_base_rpy:="{world_to_base_rpy}"',
+        ]
+    )
+
+    return [
+        Node(
+            package='robot_state_publisher',
+            executable='robot_state_publisher',
+            output='screen',
+            namespace=ns,
+            parameters=[{'robot_description': robot_description}],
+        )
+    ]
+
 
 def generate_launch_description():
     # Parameters as launch arguments
@@ -62,23 +122,6 @@ def generate_launch_description():
     franka_bringup_path = get_package_share_directory('franka_bringup')
     ns = ''     # this must match the namespace argument under mujoco_ros2_control in the plugin's parameter yaml file. 
                 # See the ros2_control_plugins_example_with_ns.yaml file for more details.
-
-    # Robot state publisher setup
-    robot_description = Command(
-        [FindExecutable(name='xacro'), ' ', franka_xacro_file, 
-            ' arm_id:=', arm_id, 
-            ' hand:=', str(load_gripper).lower(),
-            ' initial_positions:=', initial_positions])
-    
-    params = {'robot_description': robot_description}
-
-    node_robot_state_publisher = Node(
-        package='robot_state_publisher',
-        executable='robot_state_publisher',
-        output='screen',
-        namespace= ns,
-        parameters=[params]
-    )
 
     # Joint state publisher setup
     jsp_source_list = [concatenate_ns(ns, 'joint_states', True)]
@@ -143,7 +186,17 @@ def generate_launch_description():
         ),
 
         # Miscellaneous
-        node_robot_state_publisher,
+        OpaqueFunction(
+            function=_create_robot_state_publisher,
+            kwargs={
+                'franka_xacro_file': franka_xacro_file,
+                'arm_id': arm_id,
+                'initial_positions': initial_positions,
+                'hardware_layout': hardware_layout,
+                'load_gripper': load_gripper,
+                'ns': ns,
+            },
+        ),
         node_joint_state_publisher,
 
         Node( # RVIZ dependency

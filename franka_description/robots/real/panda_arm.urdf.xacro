@@ -5,9 +5,26 @@
   <xacro:arg name="robot_ip" default=""/> <!-- IP address or hostname of the robot" -->
   <xacro:arg name="use_fake_hardware" default="false"/>
   <xacro:arg name="fake_sensor_commands" default="false"/>
+  <xacro:arg name="world_to_base_xyz" default="0 0 0"/> <!-- world to base translation -->
+  <xacro:arg name="world_to_base_rpy" default="0 0 0"/> <!-- world to base orientation -->
+
+  <link name="world">
+    <visual>
+      <geometry>
+         <box size="0.1 0.1 0.1"/>
+      </geometry>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+    </visual>
+    <collision>
+      <geometry>
+         <box size="0.1 0.1 0.1"/>
+      </geometry>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+    </collision>
+  </link>
 
   <xacro:include filename="$(find franka_description)/robots/common/panda_arm.xacro"/>
-  <xacro:panda_arm arm_id="$(arg arm_id)" safety_distance="0.03"/>
+  <xacro:panda_arm arm_id="$(arg arm_id)" connected_to="world" rpy="$(arg world_to_base_rpy)" xyz="$(arg world_to_base_xyz)" safety_distance="0.03"/>
 
   <xacro:if value="$(arg hand)">
     <xacro:include filename="$(find franka_description)/robots/common/hand.xacro"/>

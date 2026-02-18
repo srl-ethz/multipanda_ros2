@@ -14,15 +14,94 @@
 
 
 import os
+import sys
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, Shutdown
+from launch.actions import DeclareLaunchArgument, OpaqueFunction, Shutdown
 from launch.conditions import IfCondition, UnlessCondition
-from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+
+_LAUNCH_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+if _LAUNCH_ROOT not in sys.path:
+    sys.path.insert(0, _LAUNCH_ROOT)
+
+from common.hardware_layout_utils import resolve_world_to_base_poses
+
+
+def _create_description_nodes(
+    context,
+    *,
+    franka_xacro_file,
+    robot_ip_1,
+    arm_id_1,
+    load_gripper_1,
+    use_fake_hardware,
+    fake_sensor_commands,
+    hardware_layout,
+    franka_controllers,
+):
+    arm_id_1_value = arm_id_1.perform(context)
+    robot_ip_1_value = robot_ip_1.perform(context)
+    load_gripper_1_value = load_gripper_1.perform(context)
+    use_fake_hardware_value = use_fake_hardware.perform(context)
+    fake_sensor_commands_value = fake_sensor_commands.perform(context)
+    hardware_layout_file = hardware_layout.perform(context)
+
+    try:
+        world_to_base_xyz, world_to_base_rpy = resolve_world_to_base_poses(
+            hardware_layout_file,
+            [arm_id_1_value],
+        )[arm_id_1_value]
+    except (OSError, KeyError, TypeError, ValueError) as error:
+        raise RuntimeError(
+            f'Failed to resolve world_to_franka_base for "{arm_id_1_value}" '
+            f'from "{hardware_layout_file}": {error}'
+        ) from error
+
+    robot_description = Command(
+        [
+            FindExecutable(name='xacro'),
+            ' ',
+            franka_xacro_file,
+            ' hand:=',
+            load_gripper_1_value,
+            ' robot_ip:=',
+            robot_ip_1_value,
+            ' arm_id:=',
+            arm_id_1_value,
+            ' use_fake_hardware:=',
+            use_fake_hardware_value,
+            ' fake_sensor_commands:=',
+            fake_sensor_commands_value,
+            f' world_to_base_xyz:="{world_to_base_xyz}"',
+            f' world_to_base_rpy:="{world_to_base_rpy}"',
+        ]
+    )
+
+    return [
+        Node(
+            package='controller_manager',
+            executable='ros2_control_node',
+            parameters=[{'robot_description': robot_description}, franka_controllers],
+            remappings=[('joint_states', 'franka/joint_states')],
+            output={
+                'stdout': 'screen',
+                'stderr': 'screen',
+            },
+            prefix=['stdbuf -o L'],
+            on_exit=Shutdown(),
+        ),
+        Node(
+            package='robot_state_publisher',
+            executable='robot_state_publisher',
+            name='robot_state_publisher',
+            output='screen',
+            parameters=[{'robot_description': robot_description}],
+        ),
+    ]
 
 
 def generate_launch_description():
@@ -49,14 +128,6 @@ def generate_launch_description():
 
     franka_xacro_file = os.path.join(get_package_share_directory('franka_description'), 'robots', 'real',
                                      'panda_arm.urdf.xacro')
-    robot_description = Command(
-        [FindExecutable(name='xacro'), ' ', franka_xacro_file, 
-         ' hand:=', load_gripper_1,
-         ' robot_ip:=', robot_ip_1,
-         ' arm_id:=', arm_id_1,
-         ' use_fake_hardware:=', use_fake_hardware,
-         ' fake_sensor_commands:=', fake_sensor_commands])
-
     rviz_file = os.path.join(get_package_share_directory('franka_description'), 'rviz',
                              'visualize_franka.rviz')
 
@@ -113,24 +184,18 @@ def generate_launch_description():
             parameters=[hardware_layout],
             output='screen',
         ),
-        Node(
-            package='controller_manager',
-            executable='ros2_control_node',
-            parameters=[{'robot_description': robot_description}, franka_controllers],
-            remappings=[('joint_states', 'franka/joint_states')],
-            output={
-                'stdout': 'screen',
-                'stderr': 'screen',
+        OpaqueFunction(
+            function=_create_description_nodes,
+            kwargs={
+                'franka_xacro_file': franka_xacro_file,
+                'robot_ip_1': robot_ip_1,
+                'arm_id_1': arm_id_1,
+                'load_gripper_1': load_gripper_1,
+                'use_fake_hardware': use_fake_hardware,
+                'fake_sensor_commands': fake_sensor_commands,
+                'hardware_layout': hardware_layout,
+                'franka_controllers': franka_controllers,
             },
-            prefix=['stdbuf -o L'],
-            on_exit=Shutdown(),
-        ),
-        Node(
-            package='robot_state_publisher',
-            executable='robot_state_publisher',
-            name='robot_state_publisher',
-            output='screen',
-            parameters=[{'robot_description': robot_description}],
         ),
         Node(
             package='joint_state_publisher',

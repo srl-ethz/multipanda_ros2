@@ -277,12 +277,12 @@ def generate_launch_description():
 
         # ),
 
-        Node(package='rviz2',
-             executable='rviz2',
-             name='rviz2',
-             arguments=['--display-config', rviz_file],
-             remappings=[('/robot_description', robot_description_topic)],
-             condition=IfCondition(use_rviz)
-             )
+        # Node(package='rviz2',
+        #      executable='rviz2',
+        #      name='rviz2',
+        #      arguments=['--display-config', rviz_file],
+        #      remappings=[('/robot_description', robot_description_topic)],
+        #      condition=IfCondition(use_rviz)
+        #      )
 
     ])

@@ -1,4 +1,4 @@
-controller_manager:
+paco/controller_manager:
   ros__parameters:
     update_rate: 1000  # Hz
 
@@ -14,15 +14,15 @@ controller_manager:
     multi_mode_controller:
       type: multi_mode_controller/MultiModeController
 
-franka_robot_state_broadcaster:
+paco/franka_robot_state_broadcaster:
   ros__parameters:
     arm_id: right
 
-franka_robot_model_broadcaster:
+paco/franka_robot_model_broadcaster:
   ros__parameters:
     arm_id: right
     
-multi_mode_controller:
+paco/multi_mode_controller:
   ros__parameters:
     arm_count: 1
     arm_1:

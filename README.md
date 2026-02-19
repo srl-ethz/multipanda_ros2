@@ -47,7 +47,7 @@ More thorough information is available in the documentation.
 ## Installation with One-Click Installer (Recommended)
 1. Clone the repository recursively to include **mujoco_ros_pkgs**:
 ```
-git clone --recursive https://github.com/tenfoldpaper/multipanda_ros2.git
+git clone --recursive https://github.com/srl-ethz/multipanda_ros2.git
 ```
 2. Then cd into the cloned repository:
 ```

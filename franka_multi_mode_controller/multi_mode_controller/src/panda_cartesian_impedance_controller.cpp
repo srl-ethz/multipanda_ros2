@@ -24,6 +24,9 @@ using Controller = PandaCartesianImpedanceController;
 namespace {
 constexpr double kMaxPositionStep = 0.1;
 constexpr double kMaxOrientationStep = 0.15;
+constexpr double kPoseFilterGain = 0.005;
+constexpr double kImpedanceFilterGain = 0.005;
+constexpr double kDeltaTauMax = 1.0;
 constexpr auto kWaypointUpdatePeriod = std::chrono::milliseconds(10);
 
 Quaterniond normalizedQuaternion(const Quaterniond& q) {
@@ -86,6 +89,15 @@ bool Controller::initImpl(const std::vector<RobotData*>& /*robot_data*/,
 }
 
 void Controller::startROSComImpl() {
+  {
+    std::lock_guard<std::mutex> lock(filter_mutex_);
+    has_filtered_pose_ = false;
+  }
+  {
+    std::lock_guard<std::mutex> lock(parameter_mutex_);
+    target_parameters_ = this->getParametersBuffered();
+    has_target_parameters_ = true;
+  }
   const std::string topic_name = "/" + arm_ids_.at(0) + "/arm/end_effector_pose_cmd";
   end_effector_pose_cmd_sub_ =
       PandaControllerBase<Parameters, Pose>::node_->create_subscription<PoseStamped>(
@@ -100,6 +112,14 @@ void Controller::stopROSComImpl() {
   end_effector_pose_cmd_sub_.reset();
   std::lock_guard<std::mutex> lock(goal_mutex_);
   has_goal_ = false;
+  {
+    std::lock_guard<std::mutex> filter_lock(filter_mutex_);
+    has_filtered_pose_ = false;
+  }
+  {
+    std::lock_guard<std::mutex> parameter_lock(parameter_mutex_);
+    has_target_parameters_ = false;
+  }
 }
 
 void Controller::endEffectorPoseCmdCallback(const PoseStamped& msg) {
@@ -142,13 +162,15 @@ bool Controller::desiredPoseCallbackImpl(Pose& p_d,
   goal_pose.q_n = Eigen::Map<const Vector7d>(msg.q_n.data());
   bool reached_goal = false;
   const Pose offset = PandaControllerBase<Parameters, Pose>::getOffset();
-  p_d = computeWaypointPose(p, goal_pose, offset, reached_goal);
+  const Pose waypoint = computeWaypointPose(p, goal_pose, offset, reached_goal);
+  p_d = waypoint;
 
   {
     std::lock_guard<std::mutex> lock(goal_mutex_);
     goal_pose_ = goal_pose;
     has_goal_ = !reached_goal;
   }
+  p_d = lowPassPose(waypoint);
 
   if (!reached_goal) {
     auto& clk = *PandaControllerBase<Parameters, Pose>::node_->get_clock();
@@ -172,14 +194,78 @@ void Controller::updateWaypointTowardsGoal() {
       goal_pose_,
       PandaControllerBase<Parameters, Pose>::getOffset(),
       reached_goal);
-  this->setDesiredPoseBuffered(waypoint);
+  this->setDesiredPoseBuffered(lowPassPose(waypoint));
   has_goal_ = !reached_goal;
 }
 
 bool Controller::setParametersCallbackImpl(Parameters& p_d, const Parameters& p,
             const std::shared_ptr<ConfigRequest>& request, const std::shared_ptr<ConfigResponse>& response) {
-  p_d.stiffness = Matrix6d(request->stiffness.data());
-  p_d.damping_ratio = Vector6d(request->damping_ratio.data());
-  p_d.nullspace_stiffness = request->nullspace_stiffness;
+  std::lock_guard<std::mutex> lock(parameter_mutex_);
+  target_parameters_.stiffness = Matrix6d(request->stiffness.data());
+  target_parameters_.damping_ratio = Vector6d(request->damping_ratio.data());
+  target_parameters_.nullspace_stiffness = request->nullspace_stiffness;
+  has_target_parameters_ = true;
+  p_d = p;
   return true;
+}
+
+Parameters Controller::preprocessParametersImpl(const Parameters& p) {
+  std::lock_guard<std::mutex> lock(parameter_mutex_);
+  if (!has_target_parameters_) {
+    target_parameters_ = p;
+    has_target_parameters_ = true;
+    return p;
+  }
+
+  Parameters p_filtered = p;
+  p_filtered.stiffness =
+      kImpedanceFilterGain * target_parameters_.stiffness +
+      (1.0 - kImpedanceFilterGain) * p.stiffness;
+  p_filtered.damping_ratio =
+      kImpedanceFilterGain * target_parameters_.damping_ratio +
+      (1.0 - kImpedanceFilterGain) * p.damping_ratio;
+  p_filtered.nullspace_stiffness =
+      kImpedanceFilterGain * target_parameters_.nullspace_stiffness +
+      (1.0 - kImpedanceFilterGain) * p.nullspace_stiffness;
+  this->setParametersBuffered(p_filtered);
+  return p_filtered;
+}
+
+void Controller::postprocessTauImpl(
+    const std::vector<std::array<double, 7>*>& tau) {
+  if (tau.empty() || tau[0] == nullptr || robot_data_.empty()) {
+    return;
+  }
+
+  const auto& tau_J_d = robot_data_[0]->state().tau_J_d;
+  for (std::size_t i = 0; i < 7; ++i) {
+    const double delta_tau = (*tau[0])[i] - tau_J_d[i];
+    (*tau[0])[i] =
+        tau_J_d[i] + std::clamp(delta_tau, -kDeltaTauMax, kDeltaTauMax);
+  }
+}
+
+Pose Controller::lowPassPose(const Pose& target_pose) {
+  std::lock_guard<std::mutex> lock(filter_mutex_);
+  if (!has_filtered_pose_) {
+    filtered_pose_ = target_pose;
+    filtered_pose_.orientation = normalizedQuaternion(filtered_pose_.orientation);
+    has_filtered_pose_ = true;
+    return filtered_pose_;
+  }
+
+  filtered_pose_.position =
+      kPoseFilterGain * target_pose.position +
+      (1.0 - kPoseFilterGain) * filtered_pose_.position;
+  filtered_pose_.q_n = target_pose.q_n;
+
+  Quaterniond target_orientation = normalizedQuaternion(target_pose.orientation);
+  Quaterniond current_orientation = normalizedQuaternion(filtered_pose_.orientation);
+  if (current_orientation.coeffs().dot(target_orientation.coeffs()) < 0.0) {
+    target_orientation.coeffs() = -target_orientation.coeffs();
+  }
+  filtered_pose_.orientation =
+      current_orientation.slerp(kPoseFilterGain, target_orientation);
+  filtered_pose_.orientation.normalize();
+  return filtered_pose_;
 }

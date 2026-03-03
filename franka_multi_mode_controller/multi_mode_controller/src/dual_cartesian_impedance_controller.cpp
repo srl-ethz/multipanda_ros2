@@ -24,6 +24,9 @@ using Controller = DualCartesianImpedanceController;
 namespace {
 constexpr double kMaxPositionStep = 0.1;
 constexpr double kMaxOrientationStep = 0.15;
+constexpr double kPoseFilterGain = 0.005;
+constexpr double kImpedanceFilterGain = 0.005;
+constexpr double kDeltaTauMax = 1.0;
 constexpr auto kWaypointUpdatePeriod = std::chrono::milliseconds(10);
 
 geometry_msgs::msg::Pose toWorldPose(
@@ -116,6 +119,15 @@ bool Controller::initImpl(const std::vector<RobotData*>& /*robot_data*/,
 }
 
 void Controller::startROSComImpl() {
+  {
+    std::lock_guard<std::mutex> lock(filter_mutex_);
+    has_filtered_pose_ = false;
+  }
+  {
+    std::lock_guard<std::mutex> lock(parameter_mutex_);
+    target_parameters_ = this->getParametersBuffered();
+    has_target_parameters_ = true;
+  }
   end_effector_pose_cmd_subs_.clear();
   end_effector_pose_cmd_subs_.reserve(arm_ids_.size());
   for (std::size_t i = 0; i < arm_ids_.size(); ++i) {
@@ -135,6 +147,14 @@ void Controller::stopROSComImpl() {
   end_effector_pose_cmd_subs_.clear();
   std::lock_guard<std::mutex> lock(goal_mutex_);
   has_goal_ = false;
+  {
+    std::lock_guard<std::mutex> filter_lock(filter_mutex_);
+    has_filtered_pose_ = false;
+  }
+  {
+    std::lock_guard<std::mutex> parameter_lock(parameter_mutex_);
+    has_target_parameters_ = false;
+  }
 }
 
 void Controller::endEffectorPoseCmdCallback(std::size_t arm_index,
@@ -210,16 +230,19 @@ bool Controller::desiredPoseCallbackImpl(Pose& p_d,
   const Pose offset = PandaControllerBase<Parameters, Pose>::getOffset();
   bool left_reached_goal = false;
   bool right_reached_goal = false;
-  p_d.poses[0] =
+  Pose waypoint_pose;
+  waypoint_pose.poses[0] =
       computeWaypointPose(p.poses[0], goal_pose.poses[0], offset.poses[0], left_reached_goal);
-  p_d.poses[1] =
+  waypoint_pose.poses[1] =
       computeWaypointPose(p.poses[1], goal_pose.poses[1], offset.poses[1], right_reached_goal);
+  p_d = waypoint_pose;
 
   {
     std::lock_guard<std::mutex> lock(goal_mutex_);
     goal_pose_ = goal_pose;
     has_goal_ = !(left_reached_goal && right_reached_goal);
   }
+  p_d = lowPassPose(waypoint_pose);
 
   if (!(left_reached_goal && right_reached_goal)) {
     auto& clk = *PandaControllerBase<Parameters, Pose>::node_->get_clock();
@@ -250,16 +273,92 @@ void Controller::updateWaypointTowardsGoal() {
                                           goal_pose_.poses[1],
                                           offset.poses[1],
                                           right_reached_goal);
-  this->setDesiredPoseBuffered(waypoint);
+  this->setDesiredPoseBuffered(lowPassPose(waypoint));
   has_goal_ = !(left_reached_goal && right_reached_goal);
 }
 
 bool Controller::setParametersCallbackImpl(Parameters& p_d, const Parameters& p,
             const std::shared_ptr<ConfigRequest>& request, const std::shared_ptr<ConfigResponse>& response) {
+  std::lock_guard<std::mutex> lock(parameter_mutex_);
   for(int i=0; i<2; i++){
-    p_d.params[i].stiffness = Matrix6d(request->stiffness.data());
-    p_d.params[i].damping_ratio = Vector6d(request->damping_ratio.data());
-    p_d.params[i].nullspace_stiffness = request->nullspace_stiffness;
+    target_parameters_.params[i].stiffness = Matrix6d(request->stiffness.data());
+    target_parameters_.params[i].damping_ratio = Vector6d(request->damping_ratio.data());
+    target_parameters_.params[i].nullspace_stiffness = request->nullspace_stiffness;
   }
+  has_target_parameters_ = true;
+  p_d = p;
   return true;
+}
+
+Parameters Controller::preprocessParametersImpl(const Parameters& p) {
+  std::lock_guard<std::mutex> lock(parameter_mutex_);
+  if (!has_target_parameters_) {
+    target_parameters_ = p;
+    has_target_parameters_ = true;
+    return p;
+  }
+
+  Parameters p_filtered = p;
+  for (std::size_t i = 0; i < p_filtered.params.size(); ++i) {
+    p_filtered.params[i].stiffness =
+        kImpedanceFilterGain * target_parameters_.params[i].stiffness +
+        (1.0 - kImpedanceFilterGain) * p.params[i].stiffness;
+    p_filtered.params[i].damping_ratio =
+        kImpedanceFilterGain * target_parameters_.params[i].damping_ratio +
+        (1.0 - kImpedanceFilterGain) * p.params[i].damping_ratio;
+    p_filtered.params[i].nullspace_stiffness =
+        kImpedanceFilterGain * target_parameters_.params[i].nullspace_stiffness +
+        (1.0 - kImpedanceFilterGain) * p.params[i].nullspace_stiffness;
+  }
+  this->setParametersBuffered(p_filtered);
+  return p_filtered;
+}
+
+void Controller::postprocessTauImpl(
+    const std::vector<std::array<double, 7>*>& tau) {
+  const std::size_t arm_count = std::min(tau.size(), robot_data_.size());
+  for (std::size_t arm_index = 0; arm_index < arm_count; ++arm_index) {
+    if (tau[arm_index] == nullptr) {
+      continue;
+    }
+    const auto& tau_J_d = robot_data_[arm_index]->state().tau_J_d;
+    for (std::size_t joint_index = 0; joint_index < 7; ++joint_index) {
+      const double delta_tau =
+          (*tau[arm_index])[joint_index] - tau_J_d[joint_index];
+      (*tau[arm_index])[joint_index] =
+          tau_J_d[joint_index] +
+          std::clamp(delta_tau, -kDeltaTauMax, kDeltaTauMax);
+    }
+  }
+}
+
+Pose Controller::lowPassPose(const Pose& target_pose) {
+  std::lock_guard<std::mutex> lock(filter_mutex_);
+  if (!has_filtered_pose_) {
+    filtered_pose_ = target_pose;
+    for (auto& pose : filtered_pose_.poses) {
+      pose.orientation = normalizedQuaternion(pose.orientation);
+    }
+    has_filtered_pose_ = true;
+    return filtered_pose_;
+  }
+
+  for (std::size_t i = 0; i < filtered_pose_.poses.size(); ++i) {
+    filtered_pose_.poses[i].position =
+        kPoseFilterGain * target_pose.poses[i].position +
+        (1.0 - kPoseFilterGain) * filtered_pose_.poses[i].position;
+    filtered_pose_.poses[i].q_n = target_pose.poses[i].q_n;
+
+    Quaterniond target_orientation =
+        normalizedQuaternion(target_pose.poses[i].orientation);
+    Quaterniond current_orientation =
+        normalizedQuaternion(filtered_pose_.poses[i].orientation);
+    if (current_orientation.coeffs().dot(target_orientation.coeffs()) < 0.0) {
+      target_orientation.coeffs() = -target_orientation.coeffs();
+    }
+    filtered_pose_.poses[i].orientation =
+        current_orientation.slerp(kPoseFilterGain, target_orientation);
+    filtered_pose_.poses[i].orientation.normalize();
+  }
+  return filtered_pose_;
 }

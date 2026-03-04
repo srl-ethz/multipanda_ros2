@@ -171,7 +171,10 @@ ensure_container_running() {
     --interactive \
     "${DOCKER_ENV[@]}" \
     --env "USER=$(id -u)" \
-    --env "ROS_DOMAIN_ID=1" \
+    #  Add DOMAIN_ID according to your setup
+    # --env "ROS_DOMAIN_ID=0" \
+    # Change RWM according to your setup
+    # --env "RMW_IMPLEMENTATION=rmw_cyclonedds_cpp"
     "${DOCKER_VOLUMES[@]}" \
     --volume "/dev:/dev" \
     --volume "$HOME:/host" \

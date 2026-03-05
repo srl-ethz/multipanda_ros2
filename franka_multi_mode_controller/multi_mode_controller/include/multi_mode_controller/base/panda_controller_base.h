@@ -86,9 +86,11 @@ class PandaControllerBase : public PandaControllerInterface {
       last_desired_ = desired_;
       desired_.update();
       move_timeout_ = 0;
+      onDesiredPoseChangedImpl(last_desired_, desired_);
     }
     const Parameters p_filtered = preprocessParametersImpl(p_);
-    computeTauImpl(tau, desired_, p_filtered);
+    const Pose desired_filtered = filterTargetImpl(desired_);
+    computeTauImpl(tau, desired_filtered, p_filtered);
     postprocessTauImpl(tau);
   }
   virtual void computeTauImpl(const std::vector<std::array<double, 7>*>& tau,
@@ -98,6 +100,11 @@ class PandaControllerBase : public PandaControllerInterface {
   virtual Parameters preprocessParametersImpl(const Parameters& p) {
     return p;
   }
+  virtual Pose filterTargetImpl(const Pose& target) {
+    return target;
+  }
+  virtual void onDesiredPoseChangedImpl(const Pose& /*last_desired*/,
+      const Pose& /*desired*/) {}
   virtual void postprocessTauImpl(
       const std::vector<std::array<double, 7>*>& /*tau*/) {}
   bool hasOffset_() override final {

@@ -26,10 +26,19 @@ class ComlessPandaCartesianImpedanceController :
   void computeTauImpl(const std::vector<std::array<double, 7>*>& tau,
       const PandaCartesianImpedanceControllerPose& desired,
       const PandaCartesianImpedanceControllerParams& p) override final;
+  void postprocessTauImpl(
+      const std::vector<std::array<double, 7>*>& tau) override final;
+  void onDesiredPoseChangedImpl(
+      const PandaCartesianImpedanceControllerPose& last_desired,
+      const PandaCartesianImpedanceControllerPose& desired) override final;
+  void startImpl() override final;
   PandaCartesianImpedanceControllerParams defaultParameters() override final;
   PandaCartesianImpedanceControllerPose getCurrentPoseImpl() override final;
   bool hasOffsetImpl() override final;
   void resetOffset() override final;
+
+  Eigen::Matrix<double, 6, 1> error_integral_{
+      Eigen::Matrix<double, 6, 1>::Zero()};
 };
 
 }

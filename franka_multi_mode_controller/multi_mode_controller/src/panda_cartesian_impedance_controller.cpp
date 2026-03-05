@@ -1,7 +1,5 @@
 #include <multi_mode_controller/controllers/panda_cartesian_impedance_controller.h>
 
-#include <algorithm>
-#include <chrono>
 #include <limits>
 
 #include <multi_mode_controller/utils/controller_factory.h>
@@ -22,12 +20,8 @@ using ConfigResponse = multi_mode_control_msgs::srv::SetCartesianImpedance::Resp
 using Controller = PandaCartesianImpedanceController;
 
 namespace {
-constexpr double kMaxPositionStep = 0.1;
-constexpr double kMaxOrientationStep = 0.15;
 constexpr double kPoseFilterGain = 0.005;
 constexpr double kImpedanceFilterGain = 0.005;
-constexpr double kDeltaTauMax = 1.0;
-constexpr auto kWaypointUpdatePeriod = std::chrono::milliseconds(10);
 
 Quaterniond normalizedQuaternion(const Quaterniond& q) {
   if (q.norm() < std::numeric_limits<double>::epsilon()) {
@@ -36,43 +30,6 @@ Quaterniond normalizedQuaternion(const Quaterniond& q) {
   Quaterniond normalized = q;
   normalized.normalize();
   return normalized;
-}
-
-Pose computeWaypointPose(const Pose& current_raw,
-                         const Pose& goal,
-                         const Pose& offset,
-                         bool& reached_goal) {
-  Pose waypoint = goal;
-  const Vector3d current_position = current_raw.position - offset.position;
-  const Vector3d delta_position = goal.position - current_position;
-  const double position_distance = delta_position.norm();
-
-  const Quaterniond current_orientation = normalizedQuaternion(current_raw.orientation);
-  const Quaterniond goal_orientation = normalizedQuaternion(goal.orientation);
-  const double orientation_distance =
-      current_orientation.angularDistance(goal_orientation);
-
-  double step_scale = 1.0;
-  if (position_distance > std::numeric_limits<double>::epsilon()) {
-    step_scale = std::min(step_scale, kMaxPositionStep / position_distance);
-  }
-  if (orientation_distance > std::numeric_limits<double>::epsilon()) {
-    step_scale = std::min(step_scale, kMaxOrientationStep / orientation_distance);
-  }
-  step_scale = std::clamp(step_scale, 0.0, 1.0);
-
-  if (step_scale >= 1.0) {
-    waypoint.position = goal.position;
-    waypoint.orientation = goal_orientation;
-    reached_goal = true;
-  } else {
-    waypoint.position = current_position + step_scale * delta_position;
-    waypoint.orientation = current_orientation.slerp(step_scale, goal_orientation);
-    waypoint.orientation.normalize();
-    reached_goal = false;
-  }
-  waypoint.q_n = goal.q_n;
-  return waypoint;
 }
 }  // namespace
 
@@ -103,15 +60,10 @@ void Controller::startROSComImpl() {
       PandaControllerBase<Parameters, Pose>::node_->create_subscription<PoseStamped>(
           topic_name, 10,
           [this](const PoseStamped& msg) { this->endEffectorPoseCmdCallback(msg); });
-  waypoint_timer_ = PandaControllerBase<Parameters, Pose>::node_->create_wall_timer(
-      kWaypointUpdatePeriod, [this]() { this->updateWaypointTowardsGoal(); });
 }
 
 void Controller::stopROSComImpl() {
-  waypoint_timer_.reset();
   end_effector_pose_cmd_sub_.reset();
-  std::lock_guard<std::mutex> lock(goal_mutex_);
-  has_goal_ = false;
   {
     std::lock_guard<std::mutex> filter_lock(filter_mutex_);
     has_filtered_pose_ = false;
@@ -139,7 +91,7 @@ void Controller::endEffectorPoseCmdCallback(const PoseStamped& msg) {
 }
 
 bool Controller::desiredPoseCallbackImpl(Pose& p_d, 
-                                         const Pose& p,
+                                         const Pose& /*p*/,
                                          const GoalMsg& msg) {
   Pose goal_pose;
   const Vector3d world_position(msg.pose.position.x, msg.pose.position.y,
@@ -160,42 +112,8 @@ bool Controller::desiredPoseCallbackImpl(Pose& p_d,
   }
 
   goal_pose.q_n = Eigen::Map<const Vector7d>(msg.q_n.data());
-  bool reached_goal = false;
-  const Pose offset = PandaControllerBase<Parameters, Pose>::getOffset();
-  const Pose waypoint = computeWaypointPose(p, goal_pose, offset, reached_goal);
-  p_d = waypoint;
-
-  {
-    std::lock_guard<std::mutex> lock(goal_mutex_);
-    goal_pose_ = goal_pose;
-    has_goal_ = !reached_goal;
-  }
-  p_d = lowPassPose(waypoint);
-
-  if (!reached_goal) {
-    auto& clk = *PandaControllerBase<Parameters, Pose>::node_->get_clock();
-    const auto& logger = PandaControllerBase<Parameters, Pose>::node_->get_logger();
-    RCLCPP_WARN_THROTTLE(
-        logger, clk, 1000,
-        "panda_cartesian_impedance_controller: Target pose exceeds step limits, tracking intermediate waypoint.");
-  }
+  p_d = goal_pose;
   return true;
-}
-
-void Controller::updateWaypointTowardsGoal() {
-  std::lock_guard<std::mutex> lock(goal_mutex_);
-  if (!has_goal_) {
-    return;
-  }
-  const Pose current_pose = this->getCurrentPose();
-  bool reached_goal = false;
-  const Pose waypoint = computeWaypointPose(
-      current_pose,
-      goal_pose_,
-      PandaControllerBase<Parameters, Pose>::getOffset(),
-      reached_goal);
-  this->setDesiredPoseBuffered(lowPassPose(waypoint));
-  has_goal_ = !reached_goal;
 }
 
 bool Controller::setParametersCallbackImpl(Parameters& p_d, const Parameters& p,
@@ -231,21 +149,7 @@ Parameters Controller::preprocessParametersImpl(const Parameters& p) {
   return p_filtered;
 }
 
-void Controller::postprocessTauImpl(
-    const std::vector<std::array<double, 7>*>& tau) {
-  if (tau.empty() || tau[0] == nullptr || robot_data_.empty()) {
-    return;
-  }
-
-  const auto& tau_J_d = robot_data_[0]->state().tau_J_d;
-  for (std::size_t i = 0; i < 7; ++i) {
-    const double delta_tau = (*tau[0])[i] - tau_J_d[i];
-    (*tau[0])[i] =
-        tau_J_d[i] + std::clamp(delta_tau, -kDeltaTauMax, kDeltaTauMax);
-  }
-}
-
-Pose Controller::lowPassPose(const Pose& target_pose) {
+Pose Controller::filterTargetImpl(const Pose& target_pose) {
   std::lock_guard<std::mutex> lock(filter_mutex_);
   if (!has_filtered_pose_) {
     filtered_pose_ = target_pose;

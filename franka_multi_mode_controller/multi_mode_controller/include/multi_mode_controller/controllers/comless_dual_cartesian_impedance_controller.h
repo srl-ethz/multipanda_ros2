@@ -40,10 +40,19 @@ class ComlessDualCartesianImpedanceController :
   void computeTauImpl(const std::vector<std::array<double, 7>*>& tau,
       const DualCartesianImpedanceControllerPose& desired,
       const DualCartesianImpedanceControllerParams& p) override final;
+  void postprocessTauImpl(
+      const std::vector<std::array<double, 7>*>& tau) override final;
+  void onDesiredPoseChangedImpl(
+      const DualCartesianImpedanceControllerPose& last_desired,
+      const DualCartesianImpedanceControllerPose& desired) override final;
+  void startImpl() override final;
   DualCartesianImpedanceControllerParams defaultParameters() override final;
   DualCartesianImpedanceControllerPose getCurrentPoseImpl() override final;
   bool hasOffsetImpl() override final;
   void resetOffset() override final;
+
+  std::vector<Eigen::Matrix<double, 6, 1>> error_integral_{
+      2, Eigen::Matrix<double, 6, 1>::Zero()};
 };
 
 }

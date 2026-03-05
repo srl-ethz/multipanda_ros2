@@ -1,4 +1,8 @@
 #include <multi_mode_controller/controllers/comless_panda_cartesian_impedance_controller.h>
+
+#include <algorithm>
+#include <cmath>
+
 #include <multi_mode_controller/utils/controller_factory.h>
 #include <multi_mode_controller/utils/damping_design.h>
 #include <multi_mode_controller/utils/nullspace_projection.h>
@@ -14,11 +18,31 @@ using Pose = PandaCartesianImpedanceControllerPose;
 using Params = PandaCartesianImpedanceControllerParams;
 using Controller = ComlessPandaCartesianImpedanceController;
 
+namespace {
+constexpr double kDeltaTauMax = 1.0;
+constexpr double kControlDt = 1.0 / 1000.0;
+constexpr double kTranslationalKi = 0.0;
+constexpr double kRotationalKi = 0.0;
+
+const Vector3d kTranslationClipMin = Vector3d::Constant(-0.1);
+const Vector3d kTranslationClipMax = Vector3d::Constant(0.1);
+const Vector3d kRotationClipMin = Vector3d::Constant(-0.2);
+const Vector3d kRotationClipMax = Vector3d::Constant(0.2);
+
+const Vector6d kIntegralClipMin =
+    (Vector6d() << -0.1, -0.1, -0.1, -0.3, -0.3, -0.3).finished();
+const Vector6d kIntegralClipMax =
+    (Vector6d() << 0.1, 0.1, 0.1, 0.3, 0.3, 0.3).finished();
+}  // namespace
+
 static auto registration = ControllerFactory::registerClass<Controller>(
     "comless_panda_cartesian_impedance_controller");
 
 void Controller::computeTauImpl(const std::vector<std::array<double, 7>*>& tau,
     const Pose& desired, const Params& p) {
+  if (tau.empty() || tau[0] == nullptr || robot_data_.empty()) {
+    return;
+  }
   Pose current = getCurrentPose();
   current.position -= getOffset().position;
   Eigen::Map<const Matrix7d> inertia(robot_data_[0]->mass().data());
@@ -26,19 +50,33 @@ void Controller::computeTauImpl(const std::vector<std::array<double, 7>*>& tau,
   Eigen::Map<const Eigen::Matrix<double, 6, 7>> jacobian(
       robot_data_[0]->eeZeroJacobian().data());
   Eigen::Map<const Vector7d> qD(robot_data_[0]->state().dq.data());
-  Vector6d error;
+  Vector6d error = Vector6d::Zero();
   error.head(3) << current.position - desired.position;
   if (desired.orientation.coeffs().dot(current.orientation.coeffs()) < 0.0) {
     current.orientation.coeffs() << -current.orientation.coeffs();
   }
-  Eigen::Quaterniond rot_error(
-      current.orientation * desired.orientation.inverse());
-  Eigen::AngleAxisd rot_error_aa(rot_error);
-  error.tail(3) << rot_error_aa.axis() * rot_error_aa.angle();
+  const Eigen::Quaterniond rot_error(
+      current.orientation.inverse() * desired.orientation);
+  error.tail(3) << rot_error.x(), rot_error.y(), rot_error.z();
+  error.tail(3) << -current.orientation.toRotationMatrix() * error.tail(3);
+  error.head(3) = error.head(3).cwiseMax(kTranslationClipMin);
+  error.head(3) = error.head(3).cwiseMin(kTranslationClipMax);
+  error.tail(3) = error.tail(3).cwiseMax(kRotationClipMin);
+  error.tail(3) = error.tail(3).cwiseMin(kRotationClipMax);
+
+  error_integral_ += kControlDt * error;
+  error_integral_ = error_integral_.cwiseMax(kIntegralClipMin);
+  error_integral_ = error_integral_.cwiseMin(kIntegralClipMax);
+
+  Matrix6d Ki = Matrix6d::Zero();
+  Ki.topLeftCorner(3, 3) = kTranslationalKi * Eigen::Matrix3d::Identity();
+  Ki.bottomRightCorner(3, 3) = kRotationalKi * Eigen::Matrix3d::Identity();
+
   Vector7d tau_task, tau_nullspace, tau_d;
   Matrix6d D = sqrtDesign<6>(pandaCartesianInertia(jacobian, inertia),
       p.stiffness, p.damping_ratio);
-  tau_task << jacobian.transpose() * (-p.stiffness*error - D*(jacobian*qD));
+  tau_task << jacobian.transpose() *
+      (-p.stiffness * error - D * (jacobian * qD) - Ki * error_integral_);
   tau_nullspace <<
       getDynamicallyConsistentNullspaceProjection<7>(inertia, jacobian) *
       (p.nullspace_stiffness * (desired.q_n - current.q_n) -
@@ -47,6 +85,29 @@ void Controller::computeTauImpl(const std::vector<std::array<double, 7>*>& tau,
   for (size_t i = 0; i < 7; ++i) {
     (*tau[0])[i] = tau_d[i];
   }
+}
+
+void Controller::postprocessTauImpl(
+    const std::vector<std::array<double, 7>*>& tau) {
+  if (tau.empty() || tau[0] == nullptr || robot_data_.empty()) {
+    return;
+  }
+
+  const auto& tau_J_d = robot_data_[0]->state().tau_J_d;
+  for (std::size_t i = 0; i < 7; ++i) {
+    const double delta_tau = (*tau[0])[i] - tau_J_d[i];
+    (*tau[0])[i] =
+        tau_J_d[i] + std::clamp(delta_tau, -kDeltaTauMax, kDeltaTauMax);
+  }
+}
+
+void Controller::onDesiredPoseChangedImpl(const Pose& /*last_desired*/,
+    const Pose& /*desired*/) {
+  error_integral_.setZero();
+}
+
+void Controller::startImpl() {
+  error_integral_.setZero();
 }
 
 Params Controller::defaultParameters() {
@@ -82,4 +143,3 @@ void Controller::resetOffset() {
   p.q_n = Vector7d::Zero();
   setOffset(p);
 }
-

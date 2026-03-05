@@ -47,29 +47,22 @@ private:
         const ServiceParameter::Response::SharedPtr& res) 
         override final;
   Parameters preprocessParametersImpl(const Parameters& p) override final;
-  void postprocessTauImpl(
-      const std::vector<std::array<double, 7>*>& tau) override final;
+  Pose filterTargetImpl(const Pose& target_pose) override final;
 
   void startROSComImpl() override final;
   void stopROSComImpl() override final;
   void endEffectorPoseCmdCallback(std::size_t arm_index,
                                   const geometry_msgs::msg::PoseStamped& msg);
-  void updateWaypointTowardsGoal();
-  Pose lowPassPose(const Pose& target_pose);
 
   std::vector<std::string> arm_ids_;
   std::vector<Eigen::Affine3d, Eigen::aligned_allocator<Eigen::Affine3d>>
       world_to_franka_base_;
   std::vector<rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr>
       end_effector_pose_cmd_subs_;
-  rclcpp::TimerBase::SharedPtr waypoint_timer_;
-  Pose goal_pose_;
   Pose filtered_pose_;
   Parameters target_parameters_;
-  bool has_goal_{false};
   bool has_filtered_pose_{false};
   bool has_target_parameters_{false};
-  std::mutex goal_mutex_;
   std::mutex filter_mutex_;
   std::mutex parameter_mutex_;
 

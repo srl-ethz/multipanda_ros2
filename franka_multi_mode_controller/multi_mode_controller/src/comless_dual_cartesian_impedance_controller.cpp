@@ -1,4 +1,8 @@
 #include <multi_mode_controller/controllers/comless_dual_cartesian_impedance_controller.h>
+
+#include <algorithm>
+#include <cmath>
+
 #include <multi_mode_controller/utils/controller_factory.h>
 #include <multi_mode_controller/utils/damping_design.h>
 #include <multi_mode_controller/utils/nullspace_projection.h>
@@ -15,22 +19,51 @@ using Pose = DualCartesianImpedanceControllerPose;
 using Params = DualCartesianImpedanceControllerParams;
 using Controller = ComlessDualCartesianImpedanceController;
 
+namespace {
+constexpr double kDeltaTauMax = 1.0;
+constexpr double kControlDt = 1.0 / 1000.0;
+constexpr double kTranslationalKi = 0.0;
+constexpr double kRotationalKi = 0.0;
+
+const Vector3d kTranslationClipMin = Vector3d::Constant(-0.1);
+const Vector3d kTranslationClipMax = Vector3d::Constant(0.1);
+const Vector3d kRotationClipMin = Vector3d::Constant(-0.2);
+const Vector3d kRotationClipMax = Vector3d::Constant(0.2);
+
+const Vector6d kIntegralClipMin =
+    (Vector6d() << -0.1, -0.1, -0.1, -0.3, -0.3, -0.3).finished();
+const Vector6d kIntegralClipMax =
+    (Vector6d() << 0.1, 0.1, 0.1, 0.3, 0.3, 0.3).finished();
+}  // namespace
+
 static auto registration = ControllerFactory::registerClass<Controller>(
     "comless_dual_cartesian_impedance_controller");
 
 void Controller::computeTauImpl(const std::vector<std::array<double, 7>*>& tau,
     const Pose& desired_poses, const Params& p) {
+  if (tau.size() < 2 || robot_data_.size() < 2 || desired_poses.poses.size() < 2 ||
+      p.params.size() < 2 || error_integral_.size() < 2) {
+    return;
+  }
+
   // measurement setup
   // double start_time = get_wall_time();
   // std::vector<std::array<double,7>> taus_(2);
   // measurement setup
 
   Pose current_poses = getCurrentPose();
+  if (current_poses.poses.size() < 2 || getOffset().poses.size() < 2) {
+    return;
+  }
   Eigen::VectorXd right_left_qs(17);
   right_left_qs << 0, 0, 0, current_poses.poses[1].q_n, current_poses.poses[0].q_n;
   // Vector14d Q = ... 
   bool isRight = false;
   for(int i = 0; i < 2; i++){
+    if (tau[i] == nullptr) {
+      isRight = !isRight;
+      continue;
+    }
     auto& desired = desired_poses.poses[i];
     auto& current = current_poses.poses[i];
     current.position -= getOffset().poses[i].position;
@@ -39,7 +72,7 @@ void Controller::computeTauImpl(const std::vector<std::array<double, 7>*>& tau,
     Eigen::Map<const Eigen::Matrix<double, 6, 7>> jacobian(
         robot_data_[i]->eeZeroJacobian().data());
     Eigen::Map<const Vector7d> qD(robot_data_[i]->state().dq.data());
-    Vector6d error;
+    Vector6d error = Vector6d::Zero();
     error.head(3) << current.position - desired.position;
     if (desired.orientation.coeffs().dot(current.orientation.coeffs()) < 0.0) {
       current.orientation.coeffs() << -current.orientation.coeffs();
@@ -58,14 +91,29 @@ void Controller::computeTauImpl(const std::vector<std::array<double, 7>*>& tau,
       tau_manipulability << -redundancy_resolution::ManipulabilityGradient(right_left_qs, isRight);
     }
     isRight = !isRight;
-    Eigen::Quaterniond rot_error(
-        current.orientation * desired.orientation.inverse());
-    Eigen::AngleAxisd rot_error_aa(rot_error);
-    error.tail(3) << rot_error_aa.axis() * rot_error_aa.angle();
+    const Eigen::Quaterniond rot_error(
+        current.orientation.inverse() * desired.orientation);
+    error.tail(3) << rot_error.x(), rot_error.y(), rot_error.z();
+    error.tail(3) << -current.orientation.toRotationMatrix() * error.tail(3);
+    error.head(3) = error.head(3).cwiseMax(kTranslationClipMin);
+    error.head(3) = error.head(3).cwiseMin(kTranslationClipMax);
+    error.tail(3) = error.tail(3).cwiseMax(kRotationClipMin);
+    error.tail(3) = error.tail(3).cwiseMin(kRotationClipMax);
+
+    error_integral_.at(i) += kControlDt * error;
+    error_integral_.at(i) = error_integral_.at(i).cwiseMax(kIntegralClipMin);
+    error_integral_.at(i) = error_integral_.at(i).cwiseMin(kIntegralClipMax);
+
+    Matrix6d Ki = Matrix6d::Zero();
+    Ki.topLeftCorner(3, 3) = kTranslationalKi * Eigen::Matrix3d::Identity();
+    Ki.bottomRightCorner(3, 3) = kRotationalKi * Eigen::Matrix3d::Identity();
+
     Vector7d tau_task, tau_nullspace, tau_d;
     Matrix6d D = sqrtDesign<6>(pandaCartesianInertia(jacobian, inertia),
         p.params[i].stiffness, p.params[i].damping_ratio);
-    tau_task << jacobian.transpose() * (-p.params[i].stiffness*error - D*(jacobian*qD));
+    tau_task << jacobian.transpose() *
+        (-p.params[i].stiffness * error - D * (jacobian * qD) -
+         Ki * error_integral_.at(i));
     tau_nullspace <<
         getDynamicallyConsistentNullspaceProjection<7>(inertia, jacobian) *
         (p.params[i].nullspace_stiffness * (desired.q_n - current.q_n) -
@@ -73,8 +121,8 @@ void Controller::computeTauImpl(const std::vector<std::array<double, 7>*>& tau,
     tau_d << tau_task + tau_nullspace + coriolis + tau_collision + tau_manipulability;
 
     for (size_t j = 0; j < 7; ++j) {
-      (*tau[i])[j] = std::min(10.0, tau_d[j]); // saturate the torque mag
-      // taus_[i][j] = std::min(10.0, tau_d[j]); // measurement 
+      (*tau[i])[j] = tau_d[j];
+      // taus_[i][j] = tau_d[j]; // measurement 
     }
   }
   /*Uncomment for logging */
@@ -96,6 +144,37 @@ void Controller::computeTauImpl(const std::vector<std::array<double, 7>*>& tau,
   //   }
   // }
   /*Uncomment for logging */
+}
+
+void Controller::postprocessTauImpl(
+    const std::vector<std::array<double, 7>*>& tau) {
+  const std::size_t arm_count = std::min(tau.size(), robot_data_.size());
+  for (std::size_t arm_index = 0; arm_index < arm_count; ++arm_index) {
+    if (tau[arm_index] == nullptr) {
+      continue;
+    }
+    const auto& tau_J_d = robot_data_[arm_index]->state().tau_J_d;
+    for (std::size_t joint_index = 0; joint_index < 7; ++joint_index) {
+      const double delta_tau =
+          (*tau[arm_index])[joint_index] - tau_J_d[joint_index];
+      (*tau[arm_index])[joint_index] =
+          tau_J_d[joint_index] +
+          std::clamp(delta_tau, -kDeltaTauMax, kDeltaTauMax);
+    }
+  }
+}
+
+void Controller::onDesiredPoseChangedImpl(const Pose& /*last_desired*/,
+    const Pose& /*desired*/) {
+  for (auto& integral : error_integral_) {
+    integral.setZero();
+  }
+}
+
+void Controller::startImpl() {
+  for (auto& integral : error_integral_) {
+    integral.setZero();
+  }
 }
 
 Params Controller::defaultParameters() {
@@ -127,7 +206,8 @@ Pose Controller::getCurrentPoseImpl() {
 }
 
 bool Controller::hasOffsetImpl() {
-  return getOffset().poses[0].orientation.norm() != 0 || getOffset().poses[1].position.norm() != 0;
+  return getOffset().poses[0].position.norm() != 0 ||
+      getOffset().poses[1].position.norm() != 0;
 }
 
 void Controller::resetOffset() {
@@ -139,4 +219,3 @@ void Controller::resetOffset() {
   }
   setOffset(p);
 }
-

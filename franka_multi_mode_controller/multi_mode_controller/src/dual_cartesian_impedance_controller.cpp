@@ -20,7 +20,7 @@ using ConfigResponse = multi_mode_control_msgs::srv::SetCartesianImpedance::Resp
 using Controller = DualCartesianImpedanceController;
 
 namespace {
-constexpr double kPoseFilterGain = 0.005;
+constexpr double kPoseFilterGain = 0.01;
 constexpr double kImpedanceFilterGain = 0.005;
 
 geometry_msgs::msg::Pose toWorldPose(

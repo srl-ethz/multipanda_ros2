@@ -13,6 +13,11 @@ set -o pipefail
 REPO_PATH="$(git rev-parse --show-toplevel)"
 REPO_NAME="$(basename "$REPO_PATH")"
 
+#  Add DOMAIN_ID according to your setup
+ROS_DOMAIN_ID=7
+# Change RWM according to your setup
+RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+
 IMAGE_NAME="build-env"
 CONTAINER_NAME="multipanda-container"
 
@@ -153,12 +158,13 @@ ensure_container_running() {
     fi
 
     echo "$CONTAINER_NAME exists but is stopped — starting..."
-    docker start "$CONTAINER_NAME" >/dev/null
+    docker start "$CONTAINER_NAME" >/dev/null 
     return 0
   fi
 
   # ---- does not exist: docker run ----
   echo "Launching $CONTAINER_NAME..."
+  echo "Image tag $IMAGE_TAG"
 
   docker run -d \
     --name "$CONTAINER_NAME" \
@@ -167,14 +173,13 @@ ensure_container_running() {
     --ipc host \
     --pid host \
     --privileged \
+    --cgroupns=host \
     --tty \
     --interactive \
     "${DOCKER_ENV[@]}" \
     --env "USER=$(id -u)" \
-    #  Add DOMAIN_ID according to your setup
-    # --env "ROS_DOMAIN_ID=0" \
-    # Change RWM according to your setup
-    # --env "RMW_IMPLEMENTATION=rmw_cyclonedds_cpp"
+    --env "ROS_DOMAIN_ID=${ROS_DOMAIN_ID}" \
+    --env "RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION}" \
     "${DOCKER_VOLUMES[@]}" \
     --volume "/dev:/dev" \
     --volume "$HOME:/host" \
@@ -195,4 +200,7 @@ ensure_container_running
 # 7) Optional: enter the container (comment out if you only want start/run behavior)
 # ------------------------------------------------------------------------------
 echo "➡ Entering environment..."
-docker exec -it --user developer "$CONTAINER_NAME" /bin/bash -lc "source /home/developer/.bashrc && bash"
+docker exec -it --user developer "$CONTAINER_NAME" /bin/bash -lc \
+  "export ROS_DOMAIN_ID=${ROS_DOMAIN_ID} \
+  && export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION} \
+  && source /home/developer/.bashrc && bash"

@@ -251,6 +251,7 @@ def generate_launch_description():
             namespace=ns,
             arguments=['multi_mode_controller', '-c', controller_manager_name],
             output='screen',
+            prefix=['chrt -f 90'],
             condition=UnlessCondition(use_fake_hardware),
         ),
         Node(

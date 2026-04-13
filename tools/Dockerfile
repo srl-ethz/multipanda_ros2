@@ -53,8 +53,8 @@ WORKDIR $HOME_DIR/source_code
 
 # MuJoCo 3.2.0
 RUN sudo apt-get update && sudo apt-get install -y \
-    libglfw3 libglfw3-dev libgl1-mesa-dev libxinerama-dev libxcursor-dev libxrandr-dev libxi-dev ninja-build zlib1g-dev clang-12 && \
-    git clone -b 3.2.0 https://github.com/google-deepmind/mujoco.git && \
+    libglfw3 libglfw3-dev libgl1-mesa-dev libxinerama-dev libxcursor-dev libxrandr-dev libxi-dev ninja-build zlib1g-dev clang-12
+RUN git clone -b 3.2.0 https://github.com/google-deepmind/mujoco.git && \
     cd mujoco && mkdir build && cd build && \
     cmake .. -DCMAKE_INSTALL_PREFIX=$HOME_DIR/Libraries/mujoco && \
     cmake --build . --parallel $(nproc) && cmake --install .

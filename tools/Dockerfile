@@ -71,6 +71,20 @@ RUN git clone https://github.com/frankaemika/libfranka.git && \
     cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF -DCMAKE_INSTALL_PREFIX=$HOME_DIR/Libraries/libfranka .. && \
     cmake --build . --parallel $(nproc) && cmake --install .
 
+# OSQP 0.6.3 + osqp-eigen 0.8.1 (QP solver for the MPC controllet).
+# Installed into the default prefix (/usr/local) so find_package picks them up.
+RUN git clone --recursive https://github.com/osqp/osqp.git && \
+    cd osqp && git checkout v0.6.3 && git submodule update --init --recursive && \
+    mkdir build && cd build && \
+    cmake -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release .. && \
+    cmake --build . --parallel $(nproc) && cmake --install .
+RUN git clone https://github.com/robotology/osqp-eigen.git && \
+    cd osqp-eigen && git checkout v0.8.1 && \
+    mkdir build && cd build && \
+    cmake -DCMAKE_BUILD_TYPE=Release .. && \
+    cmake --build . --parallel $(nproc) && cmake --install . && \
+    ldconfig
+
 # Ensure the developer user owns the libraries we just built as root
 RUN chown -R developer:developer $HOME_DIR/Libraries
 # *********************************************************

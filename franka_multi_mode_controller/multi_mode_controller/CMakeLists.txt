@@ -35,12 +35,18 @@ rcutils
 realtime_tools
 sensor_msgs
 geometry_msgs
+std_srvs
 Franka
 )
 
 # Find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(Threads REQUIRED)
+# QP solver for the MPC controllet (built from source in the Docker image; see
+# tools/Dockerfile). No rosdep key, so it is intentionally not in package.xml.
+find_package(osqp REQUIRED)
+find_package(OsqpEigen REQUIRED)
 
 foreach(Dependency IN ITEMS ${THIS_PACKAGE_INCLUDE_DEPENDS})
   find_package(${Dependency} REQUIRED)
@@ -65,6 +71,9 @@ add_library(multi_mode_controller SHARED
   src/robot_data.cpp
   src/controller_factory.cpp
   src/redundancy_resolution.cpp
+  src/cartesian_mpc.cpp
+  src/comless_panda_mpc_controller.cpp
+  src/panda_mpc_controller.cpp
   src/comless_panda_cartesian_impedance_controller.cpp
   src/comless_dual_cartesian_impedance_controller.cpp
   src/comless_coupled_dual_cartesian_impedance_controller.cpp
@@ -87,8 +96,9 @@ target_include_directories(
 
 ament_target_dependencies(multi_mode_controller PUBLIC
                           ${THIS_PACKAGE_INCLUDE_DEPENDS})
-target_link_libraries(multi_mode_controller PUBLIC 
-                      openGJK)
+target_link_libraries(multi_mode_controller
+                      PUBLIC openGJK
+                      PRIVATE OsqpEigen::OsqpEigen Threads::Threads)
 
 install(
         TARGETS multi_mode_controller

@@ -25,6 +25,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SetCartesianImpedance.srv"
   "srv/SetControllers.srv"
   "srv/SetJointImpedance.srv"
+  "srv/SetMpc.srv"
   "srv/SetRecoveryMode.srv"
   "srv/SetReflex.srv"
   "srv/SetThresholds.srv"

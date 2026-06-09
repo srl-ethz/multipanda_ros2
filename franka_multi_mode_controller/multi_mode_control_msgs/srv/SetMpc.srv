@@ -1,0 +1,6 @@
+float64[7] kp           # joint-space proportional gains of the 1 kHz tracking PD
+float64[7] kd           # joint-space derivative gains of the 1 kHz tracking PD
+float64[6] task_weight  # diagonal task-space tracking weight [x, y, z, rx, ry, rz]
+float64 input_weight    # torque (input) regularization weight in the MPC cost
+---
+bool success

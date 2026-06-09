@@ -13,6 +13,10 @@
   <depend>franka_hardware</depend>
   <depend>franka_semantic_components</depend>
   <depend>geometry_msgs</depend>
+  <depend>std_srvs</depend>
+  <!-- OSQP / osqp-eigen are built from source in tools/Dockerfile (no rosdep
+       key); resolved through CMake find_package(osqp)/find_package(OsqpEigen). -->
+
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

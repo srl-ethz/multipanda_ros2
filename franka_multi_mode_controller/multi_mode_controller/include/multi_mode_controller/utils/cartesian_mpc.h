@@ -49,7 +49,7 @@ class CartesianMpc {
     //   * torque:   plan tau_ff only up to torque_limit_scale * tau_max, leaving
     //     headroom for the 1 kHz tracking PD that is added on top of tau_ff
     //     (the final command is still hard-clamped to tau_max downstream).
-    double joint_position_margin = 0.05;  // rad (~2.9 deg)
+    double joint_position_margin = 0.1;  // rad (~5.72958 deg)
     double velocity_limit_scale = 0.95;
     double torque_limit_scale = 0.9;
   };

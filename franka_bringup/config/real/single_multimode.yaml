@@ -27,11 +27,16 @@ paco/multi_mode_controller:
     arm_count: 1
     arm_1:
       arm_id: right
-    controllers: ["panda_joint_impedance_controller", "panda_cartesian_impedance_controller"]
+    controllers: ["panda_joint_impedance_controller", "panda_cartesian_impedance_controller", "panda_mpc_controller"]
     resources:
         panda_joint_impedance_controller: ["right"]
         panda_cartesian_impedance_controller: ["right"]
+        panda_mpc_controller: ["right"]
+    # Cartesian impedance stays the launch default on real hardware; switch to
+    # the (experimental) MPC deliberately via ~/set_controllers, then publish to
+    # /right/arm/mpc_end_effector_pose_cmd.
     start_controllers:
         names: ["panda_cartesian_impedance_controller"]
         resources:
             panda_cartesian_impedance_controller: ["right"]
+    panda_mpc_controller.command_dt: 0.1

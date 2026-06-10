@@ -39,6 +39,19 @@ class CartesianMpc {
     double dq_weight = 1e-2;      // joint-velocity regularization
     double terminal_scale = 10.0; // multiplier on the final-stage tracking cost
     int max_iteration = 10000;    // OSQP iteration cap
+
+    // Safety margins applied to the official Panda limits (panda_limits.h) when
+    // forming the box constraints. The limits there are the *hard* limits at
+    // which the robot faults, so the MPC keeps a margin:
+    //   * position: shrink [q_min, q_max] inward by joint_position_margin (rad)
+    //     to stay clear of the joint-limit reflex,
+    //   * velocity: allow only velocity_limit_scale * qD_max,
+    //   * torque:   plan tau_ff only up to torque_limit_scale * tau_max, leaving
+    //     headroom for the 1 kHz tracking PD that is added on top of tau_ff
+    //     (the final command is still hard-clamped to tau_max downstream).
+    double joint_position_margin = 0.05;  // rad (~2.9 deg)
+    double velocity_limit_scale = 0.95;
+    double torque_limit_scale = 0.9;
   };
 
   // Runtime-tunable weights (settable through the SetMpc service).

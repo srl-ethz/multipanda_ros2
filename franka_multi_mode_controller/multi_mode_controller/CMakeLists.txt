@@ -133,6 +133,16 @@ if(BUILD_TESTING)
   # a copyright and license is added to all source files
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  # Unit test for the Cartesian MPC QP layer. cartesian_mpc.cpp is compiled
+  # directly into the test so it only depends on Eigen + OSQP (not the full
+  # hardware stack / libfranka), keeping the unit test self-contained.
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_cartesian_mpc
+    test/test_cartesian_mpc.cpp
+    src/cartesian_mpc.cpp)
+  target_include_directories(test_cartesian_mpc PRIVATE include ${EIGEN3_INCLUDE_DIRS})
+  target_link_libraries(test_cartesian_mpc OsqpEigen::OsqpEigen)
 endif()
 
 ament_export_include_directories(

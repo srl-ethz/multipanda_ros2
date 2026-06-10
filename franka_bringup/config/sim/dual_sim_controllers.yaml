@@ -109,18 +109,24 @@ multi_mode_controller:
       arm_id: mj_left
     arm_2:
       arm_id: mj_right
-    controllers: ["panda_joint_impedance_controller", 
+    controllers: ["panda_joint_impedance_controller",
                   "panda_joint_velocity_controller",
-                  "comless_coupled_dual_cartesian_impedance_controller", 
+                  "comless_coupled_dual_cartesian_impedance_controller",
                   "dual_cartesian_impedance_controller",
-                  "des_coupled_dual_cartesian_impedance_controller"]
+                  "des_coupled_dual_cartesian_impedance_controller",
+                  "panda_mpc_controller"]
     resources:
         comless_coupled_dual_cartesian_impedance_controller: ["mj_left&mj_right"]
         dual_cartesian_impedance_controller: ["mj_left&mj_right"]
         des_coupled_dual_cartesian_impedance_controller: ["mj_left&mj_right"]
         panda_joint_impedance_controller: ["mj_left","mj_right"]
         panda_joint_velocity_controller: ["mj_left","mj_right"]
+        # Stage-1 Cartesian MPC runs per-arm (one independent instance each).
+        panda_mpc_controller: ["mj_left","mj_right"]
     start_controllers:
-        names: ["dual_cartesian_impedance_controller"]
+        names: ["panda_mpc_controller"]
         resources:
-            dual_cartesian_impedance_controller: ["mj_left&mj_right"]
+            panda_mpc_controller: ["mj_left","mj_right"]
+    # Per-arm command topics: /mj_left/arm/mpc_end_effector_pose_cmd,
+    # /mj_right/arm/mpc_end_effector_pose_cmd. Spacing (s) between waypoints:
+    panda_mpc_controller.command_dt: 0.1

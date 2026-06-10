@@ -99,19 +99,24 @@ bool CartesianMpc::solve(const Vector7d& q0,
     upper.segment(row, kNx) = rhs;
   }
 
-  // Box bounds: one identity row per decision variable.
+  // Box bounds: one identity row per decision variable. The official Panda
+  // limits (panda_limits.h) are the hard fault thresholds, so apply margins.
+  const Vector7d q_lo = panda_limits::q_min.array() + config_.joint_position_margin;
+  const Vector7d q_hi = panda_limits::q_max.array() - config_.joint_position_margin;
+  const Vector7d dq_hi = config_.velocity_limit_scale * panda_limits::qD_max;
+  const Vector7d tau_hi = config_.torque_limit_scale * panda_limits::tau_max;
   for (int v = 0; v < n; ++v) {
     a_triplets.emplace_back(n_eq + v, v, 1.0);
   }
   for (int k = 1; k <= T; ++k) {
-    lower.segment(n_eq + ix(k), kNq) = panda_limits::q_min;
-    upper.segment(n_eq + ix(k), kNq) = panda_limits::q_max;
-    lower.segment(n_eq + ix(k) + kNq, kNq) = -panda_limits::qD_max;
-    upper.segment(n_eq + ix(k) + kNq, kNq) = panda_limits::qD_max;
+    lower.segment(n_eq + ix(k), kNq) = q_lo;
+    upper.segment(n_eq + ix(k), kNq) = q_hi;
+    lower.segment(n_eq + ix(k) + kNq, kNq) = -dq_hi;
+    upper.segment(n_eq + ix(k) + kNq, kNq) = dq_hi;
   }
   for (int k = 0; k < T; ++k) {
-    lower.segment(n_eq + iu(k), kNu) = -panda_limits::tau_max;
-    upper.segment(n_eq + iu(k), kNu) = panda_limits::tau_max;
+    lower.segment(n_eq + iu(k), kNu) = -tau_hi;
+    upper.segment(n_eq + iu(k), kNu) = tau_hi;
   }
 
   Eigen::SparseMatrix<double> constraints(m, n);

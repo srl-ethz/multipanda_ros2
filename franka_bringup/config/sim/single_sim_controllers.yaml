@@ -73,9 +73,9 @@ multi_mode_controller:
         panda_cartesian_impedance_controller: ["panda"]
         panda_mpc_controller: ["panda"]
     start_controllers:
-        names: ["panda_cartesian_impedance_controller"]
+        names: ["panda_mpc_controller"]
         resources:
-            panda_cartesian_impedance_controller: ["panda"]
+            panda_mpc_controller: ["panda"]
     # Stage-1 Cartesian MPC controllet. Switch to it at runtime via the
     # ~/set_controllers service. Spacing (s) between consecutive commanded
     # waypoints on /panda/arm/mpc_end_effector_pose_cmd:

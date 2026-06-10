@@ -20,6 +20,10 @@ namespace {
 constexpr double kSolvePeriod = 0.01;   // s, ~100 Hz worker rate
 constexpr double kStaleTimeout = 0.05;  // s, drop to hold if solution older
 constexpr double kDeltaTauMax = 1.0;    // Nm, per-cycle torque rate limit
+// Upper bound on buffered waypoints. Each command extends the buffer (per the
+// spec), so this bounds memory / look-ahead under high-rate republishing.
+// ~200 s of trajectory at the default 0.1 s spacing - ample for one sequence.
+constexpr std::size_t kMaxWaypoints = 2000;
 
 double steadyNow() {
   return std::chrono::duration<double>(
@@ -183,16 +187,33 @@ void Controller::appendWaypoints(
   if (poses.empty()) {
     return;
   }
+  const double now = steadyNow();
+  bool dropped = false;
   {
     std::lock_guard<std::mutex> lock(waypoint_mutex_);
-    const double base = waypoints_.empty() ? steadyNow() : waypoints_.back().time;
+    // Reclaim space by dropping already-executed waypoints (keep one anchor).
+    while (waypoints_.size() >= 2 && waypoints_[1].time <= now) {
+      waypoints_.pop_front();
+    }
+    const double base = waypoints_.empty() ? now : waypoints_.back().time;
     for (std::size_t i = 0; i < poses.size(); ++i) {
+      if (waypoints_.size() >= kMaxWaypoints) {
+        dropped = true;
+        break;
+      }
       TimedPose wp;
       wp.time = base + static_cast<double>(i + 1) * command_dt_;
       wp.position = poses[i].first;
       wp.orientation = poses[i].second.normalized();
       waypoints_.push_back(wp);
     }
+  }
+  if (dropped && node_) {
+    RCLCPP_WARN_THROTTLE(
+        node_->get_logger(), *node_->get_clock(), 2000,
+        "panda_mpc_controller: waypoint buffer full (%zu); dropping excess. "
+        "Publish a sequence once instead of streaming, or clear first.",
+        kMaxWaypoints);
   }
   // Mark the controllet as moving and keep getDesiredPose meaningful.
   Pose desired = getCurrentPose();

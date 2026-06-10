@@ -47,18 +47,24 @@ paco/real_multi_mode_controller:
       arm_id: left
     arm_2:
       arm_id: right
-    controllers: ["panda_joint_impedance_controller", 
+    controllers: ["panda_joint_impedance_controller",
                   "panda_joint_velocity_controller",
-                  "comless_coupled_dual_cartesian_impedance_controller", 
+                  "comless_coupled_dual_cartesian_impedance_controller",
                   "dual_cartesian_impedance_controller",
-                  "des_coupled_dual_cartesian_impedance_controller"]
+                  "des_coupled_dual_cartesian_impedance_controller",
+                  "panda_mpc_controller"]
     resources:
         comless_coupled_dual_cartesian_impedance_controller: ["left&right"]
         dual_cartesian_impedance_controller: ["left&right"]
         des_coupled_dual_cartesian_impedance_controller: ["left&right"]
         panda_joint_impedance_controller: ["left","right"]
         panda_joint_velocity_controller: ["left","right"]
+        # Stage-1 Cartesian MPC runs per-arm (one independent instance each).
+        panda_mpc_controller: ["left","right"]
+    # Coupled dual-cartesian stays the launch default on real hardware; switch
+    # to the (experimental) per-arm MPC deliberately via ~/set_controllers.
     start_controllers:
         names: ["dual_cartesian_impedance_controller"]
         resources:
             dual_cartesian_impedance_controller: ["left&right"]
+    panda_mpc_controller.command_dt: 0.1

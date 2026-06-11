@@ -2,5 +2,8 @@ float64[7] kp           # joint-space proportional gains of the 1 kHz tracking P
 float64[7] kd           # joint-space derivative gains of the 1 kHz tracking PD
 float64[6] task_weight  # diagonal task-space tracking weight [x, y, z, rx, ry, rz]
 float64 input_weight    # torque (input) regularization weight in the MPC cost
+float64 posture_weight  # nominal-posture (redundancy) regularization weight
+float64 velocity_weight # reference-velocity tracking weight (task-space damping when the target is held)
+float64 accel_weight    # joint-acceleration smoothness weight
 ---
 bool success

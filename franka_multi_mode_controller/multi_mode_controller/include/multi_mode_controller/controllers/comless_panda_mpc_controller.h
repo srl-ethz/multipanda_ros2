@@ -28,6 +28,9 @@ struct PandaMpcControllerParams {
   Eigen::Matrix<double, 7, 1> kd;          // 1 kHz tracking PD derivative gains
   Eigen::Matrix<double, 6, 1> task_weight; // MPC task-space tracking weight
   double input_weight;                     // MPC torque regularization weight
+  double posture_weight;                   // MPC nominal-posture regularization
+  double velocity_weight;                  // MPC reference-velocity tracking
+  double accel_weight;                     // MPC acceleration smoothness
 };
 
 // A reference pose stamped on the steady clock (Franka base frame).
@@ -59,8 +62,16 @@ class ComlessPandaMpcController :
   // command_dt, chaining onto any waypoints already buffered.
   void appendWaypoints(
       const std::vector<std::pair<Eigen::Vector3d, Eigen::Quaterniond>>& poses);
+  // Replace the whole trajectory with a single target: atomically purges the
+  // buffer and inserts `pose` as the next step. Use for single-pose commands
+  // (e.g. end_effector_pose_cmd) that should override, not extend, the queue.
+  void setImmediateTarget(const Eigen::Vector3d& position,
+                          const Eigen::Quaterniond& orientation);
   void clearWaypoints();
   void setCommandDt(double command_dt);
+  // Override the nominal posture of the QP's redundancy-resolving
+  // regularization. Call from init (before the solve thread starts).
+  void setNominalPosture(const Eigen::Matrix<double, 7, 1>& q_nominal);
 
  protected:
   using Vector6d = Eigen::Matrix<double, 6, 1>;

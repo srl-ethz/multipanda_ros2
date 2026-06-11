@@ -24,6 +24,10 @@ using MpcDesPoseMsg = geometry_msgs::msg::PoseStamped;
 // Interfaces (resource == arm_id for a single arm):
 //   * <arm_id>/arm/mpc_end_effector_pose_cmd  (geometry_msgs/PoseArray, world
 //     frame): a sequence of EE poses appended to the waypoint buffer.
+//   * <arm_id>/arm/end_effector_pose_cmd      (geometry_msgs/PoseStamped, world
+//     frame): a single EE pose that *replaces* the trajectory (purges the
+//     buffer and becomes the next-step target). Mirrors the topic the Cartesian
+//     impedance controller listens on, so it is a drop-in command interface.
 //   * <arm_id>/arm/mpc_clear_waypoints        (std_srvs/Trigger): clears the
 //     unexecuted waypoints.
 //   * <resource>/<name>/desired_pose          (geometry_msgs/PoseStamped, world
@@ -60,15 +64,24 @@ class PandaMpcController :
   void stopROSComImpl() override final;
 
   void waypointSequenceCallback(const geometry_msgs::msg::PoseArray& msg);
+  void endEffectorPoseCmdCallback(const geometry_msgs::msg::PoseStamped& msg);
   void clearWaypointsCallback(
       const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
       const std::shared_ptr<std_srvs::srv::Trigger::Response> res);
+
+  // Transforms a world-frame pose into the arm's Franka base frame. Returns
+  // false (and throttle-warns) on an invalid orientation quaternion.
+  bool transformWorldPose(const geometry_msgs::msg::Pose& pose,
+                          Eigen::Vector3d& base_position,
+                          Eigen::Quaterniond& base_orientation);
 
   std::vector<std::string> arm_ids_;
   std::vector<Eigen::Affine3d, Eigen::aligned_allocator<Eigen::Affine3d>>
       world_to_franka_base_;
   rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr
       waypoint_sequence_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr
+      end_effector_pose_cmd_sub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr clear_waypoints_srv_;
 };
 

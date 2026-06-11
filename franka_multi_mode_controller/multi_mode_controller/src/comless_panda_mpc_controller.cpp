@@ -53,7 +53,14 @@ Params Controller::defaultParameters() {
   p.kd = (Vector7d() << 40, 40, 40, 40, 15, 10, 5).finished();
   p.task_weight = (Vector6d() << 1000, 1000, 1000, 100, 100, 100).finished();
   p.input_weight = 1e-3;
+  p.posture_weight = 10.0;
+  p.velocity_weight = CartesianMpc::Weights{}.velocity_weight;
+  p.accel_weight = CartesianMpc::Weights{}.accel_weight;
   return p;
+}
+
+void Controller::setNominalPosture(const Vector7d& q_nominal) {
+  mpc_.setNominalPosture(q_nominal);
 }
 
 Pose Controller::getCurrentPoseImpl() {
@@ -195,7 +202,13 @@ void Controller::appendWaypoints(
     while (waypoints_.size() >= 2 && waypoints_[1].time <= now) {
       waypoints_.pop_front();
     }
-    const double base = waypoints_.empty() ? now : waypoints_.back().time;
+    // Chain onto the executing trajectory, but never behind the present: if
+    // the buffer's tail has already been executed (e.g. a single stale
+    // setImmediateTarget waypoint), timestamping the new sequence from it
+    // would put the whole sequence in the past and the controller would
+    // fast-forward through it.
+    const double base =
+        waypoints_.empty() ? now : std::max(now, waypoints_.back().time);
     for (std::size_t i = 0; i < poses.size(); ++i) {
       if (waypoints_.size() >= kMaxWaypoints) {
         dropped = true;
@@ -219,6 +232,26 @@ void Controller::appendWaypoints(
   Pose desired = getCurrentPose();
   desired.position = poses.back().first;
   desired.orientation = poses.back().second.normalized();
+  setDesiredPoseBuffered(desired);
+}
+
+void Controller::setImmediateTarget(const Eigen::Vector3d& position,
+                                    const Eigen::Quaterniond& orientation) {
+  const Eigen::Quaterniond target = orientation.normalized();
+  {
+    // Purge and re-seed under a single lock so the worker never observes an
+    // empty buffer between the clear and the insert.
+    std::lock_guard<std::mutex> lock(waypoint_mutex_);
+    waypoints_.clear();
+    TimedPose wp;
+    wp.time = steadyNow() + command_dt_;  // the next step
+    wp.position = position;
+    wp.orientation = target;
+    waypoints_.push_back(wp);
+  }
+  Pose desired = getCurrentPose();
+  desired.position = position;
+  desired.orientation = target;
   setDesiredPoseBuffered(desired);
 }
 
@@ -318,10 +351,21 @@ void Controller::mpcLoop() {
       CartesianMpc::Weights weights;
       weights.task_weight = params.task_weight;
       weights.input_weight = params.input_weight;
+      weights.posture_weight = params.posture_weight;
+      weights.velocity_weight = params.velocity_weight;
+      weights.accel_weight = params.accel_weight;
 
       CartesianMpc::Solution sol;
       const bool solved = mpc_.solve(snap.q, snap.dq, snap.mass, snap.coriolis,
                                      snap.jacobian, refs, weights, sol);
+      if (node_) {
+        // Solver health telemetry (enable with --log-level <node>:=debug).
+        const auto& st = mpc_.lastStats();
+        RCLCPP_DEBUG_THROTTLE(
+            node_->get_logger(), *node_->get_clock(), 2000,
+            "panda_mpc_controller: QP iters=%d osqp_time=%.1f ms polish=%d",
+            st.iterations, st.run_time * 1e3, st.polish_status);
+      }
       if (solved) {
         std::lock_guard<std::mutex> lock(solution_mutex_);
         solution_.valid = true;
@@ -334,7 +378,8 @@ void Controller::mpcLoop() {
         // Leave the last solution in place; the RT loop drops to hold once it
         // goes stale. Just warn.
         RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000,
-                             "panda_mpc_controller: QP solve failed.");
+                             "panda_mpc_controller: QP solve failed (%s).",
+                             mpc_.lastFailure().c_str());
       }
     }
 

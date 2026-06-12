@@ -67,8 +67,6 @@ TEST(CartesianMpc, HoldReturnsGravityFreeRest) {
 
 // A pure +x translation reference (5 cm) should drive joint 0 in the positive
 // direction (task dim 0 == joint 0 here) and leave the other joints alone.
-// The terminal stage tracks the COASTED pose (look-ahead damping), so assert
-// progress on q_T + lookahead*dq_T, the quantity the terminal cost shapes.
 TEST(CartesianMpc, TracksTranslationStep) {
   CartesianMpc::Config cfg;
   CartesianMpc mpc{cfg};
@@ -77,10 +75,6 @@ TEST(CartesianMpc, TracksTranslationStep) {
   ASSERT_TRUE(mpc.solve(homeQ(), V7::Zero(), testMass(), V7::Zero(),
                         identityJacobian(), refs, weights(), s));
   ASSERT_TRUE(s.success);
-  const double coasted = s.q_ref.back()(0) +
-                         cfg.terminal_lookahead * s.dq_ref.back()(0) -
-                         homeQ()(0);
-  EXPECT_GT(coasted, 0.03);                                  // closing on +x
   EXPECT_GT(s.q_ref.back()(0) - homeQ()(0), 0.015);          // really moving
   EXPECT_LT(std::abs(s.q_ref.back()(1) - homeQ()(1)), 1e-3);  // others fixed
 }
@@ -167,11 +161,16 @@ TEST(CartesianMpc, PostureDoesNotBiasTaskSpace) {
 }
 
 // Regression for the ~1 Hz ringing around a constant target: the terminal
-// velocity penalty must make each plan REACH AND STOP, i.e. end the horizon
-// near rest even for a step reference that minimum-time plans would fly
-// through with momentum.
-TEST(CartesianMpc, PlanEndsNearRest) {
-  CartesianMpc mpc{CartesianMpc::Config{}};
+// ||dq_T||^2 penalty must BOUND the momentum each plan carries into the
+// target - near-minimum-time plans would arrive at full cruise and the
+// re-solve chain then closes an underdamped loop. A full stop at the horizon
+// end is NOT required (that was the removed look-ahead cost's contract, see
+// MPC_development_plan.md Stage 1.9): the residual momentum is shed across
+// the re-solve chain, measured ~20 mm overshoot / 2.4 s settle on a 10 cm
+// step in sim.
+TEST(CartesianMpc, PlanBoundsArrivalMomentum) {
+  CartesianMpc::Config cfg;
+  CartesianMpc mpc{cfg};
   CartesianMpc::Solution s;
   const std::vector<V6> refs(10, (V6() << 0.05, 0, 0, 0, 0, 0).finished());
   ASSERT_TRUE(mpc.solve(homeQ(), V7::Zero(), testMass(), V7::Zero(),
@@ -179,8 +178,18 @@ TEST(CartesianMpc, PlanEndsNearRest) {
   ASSERT_TRUE(s.success);
   // Mid-horizon the plan moves (cruise unconstrained) ...
   EXPECT_GT(s.dq_ref[4].cwiseAbs().maxCoeff(), 0.1);
-  // ... but it arrives near rest.
-  EXPECT_LT(s.dq_ref.back().cwiseAbs().maxCoeff(), 0.15);
+  // ... but the arrival momentum is bounded ...
+  EXPECT_LT(s.dq_ref.back().cwiseAbs().maxCoeff(), 0.5);
+  // ... and measurably damped vs the same plan without the terminal penalty.
+  CartesianMpc::Config cfg_undamped = cfg;
+  cfg_undamped.terminal_dq_weight = 0.0;
+  CartesianMpc mpc_undamped{cfg_undamped};
+  CartesianMpc::Solution s_undamped;
+  ASSERT_TRUE(mpc_undamped.solve(homeQ(), V7::Zero(), testMass(), V7::Zero(),
+                                 identityJacobian(), refs, weights(),
+                                 s_undamped));
+  EXPECT_LT(s.dq_ref.back().cwiseAbs().maxCoeff(),
+            0.8 * s_undamped.dq_ref.back().cwiseAbs().maxCoeff());
 }
 
 // Velocity feed-forward: refs that RAMP at a constant rate (a moving target
@@ -314,8 +323,8 @@ TEST(CartesianMpc, RecoversFromMarginViolation) {
   ASSERT_TRUE(mpc.solve(q, V7::Zero(), testMass(), V7::Zero(),
                         identityJacobian(), refs, weights(), s));
   ASSERT_TRUE(s.success);
-  // Steers back toward the margined bound, not further out (~0.1 rad/s with
-  // the look-ahead damping; full recovery happens across the re-solve chain).
+  // Steers back toward the margined bound, not further out (full recovery
+  // happens across the re-solve chain).
   EXPECT_GT(s.q_ref.back()(0), q(0) + 0.008);
   EXPECT_GT(s.dq_ref.back()(0), 0.0);  // still moving inward at horizon end
 }

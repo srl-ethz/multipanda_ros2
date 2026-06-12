@@ -242,6 +242,11 @@ hardware_interface::return_type FrankaMjHardwareSystem::read(const rclcpp::Time&
       model_pointers_[arm_container_pair.first] = arm.robot_->getModel();
     }
     arm.hw_franka_robot_state_ = arm.robot_->populateFrankaState();
+    // tau_J_d is the last *commanded* (gravity-free) joint torque on the real
+    // robot; RobotSim cannot see the command, so mirror it here. Without this
+    // it stays zero and any controller torque-rate limiter referencing
+    // tau_J_d degenerates into an absolute clamp in sim.
+    arm.hw_franka_robot_state_.tau_J_d = arm.hw_commands_joint_effort_;
     arm.hw_positions_ = arm.hw_franka_robot_state_.q;
     arm.hw_velocities_ = arm.hw_franka_robot_state_.dq;
     arm.hw_efforts_ = arm.hw_franka_robot_state_.tau_J;

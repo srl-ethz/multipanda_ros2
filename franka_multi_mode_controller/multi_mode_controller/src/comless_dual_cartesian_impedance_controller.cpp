@@ -34,6 +34,14 @@ const Vector6d kIntegralClipMin =
     (Vector6d() << -0.1, -0.1, -0.1, -0.3, -0.3, -0.3).finished();
 const Vector6d kIntegralClipMax =
     (Vector6d() << 0.1, 0.1, 0.1, 0.3, 0.3, 0.3).finished();
+
+// Bound on the static task-space force/torque per arm (stiffness + integral
+// terms; the damping term vanishes at rest), with margin below the FCI's
+// default Cartesian collision reflex thresholds (20 N / 25 Nm) so a blocked
+// end-effector pushes steadily instead of tripping the reflex. Clamping the
+// *force* (not the error) keeps the bound valid for any runtime stiffness.
+constexpr double kMaxStaticForce = 15.0;   // N,  0.75 * 20 N reflex default
+constexpr double kMaxStaticTorque = 20.0;  // Nm, 0.80 * 25 Nm reflex default
 }  // namespace
 
 static auto registration = ControllerFactory::registerClass<Controller>(
@@ -111,9 +119,15 @@ void Controller::computeTauImpl(const std::vector<std::array<double, 7>*>& tau,
     Vector7d tau_task, tau_nullspace, tau_d;
     Matrix6d D = sqrtDesign<6>(pandaCartesianInertia(jacobian, inertia),
         p.params[i].stiffness, p.params[i].damping_ratio);
-    tau_task << jacobian.transpose() *
-        (-p.params[i].stiffness * error - D * (jacobian * qD) -
-         Ki * error_integral_.at(i));
+    // Static (position-dependent) task force, clamped below the Cartesian
+    // collision reflex thresholds so a blocked EE cannot trip the reflex.
+    Vector6d f_static =
+        -p.params[i].stiffness * error - Ki * error_integral_.at(i);
+    f_static.head(3) = f_static.head(3).cwiseMax(-kMaxStaticForce)
+                                       .cwiseMin(kMaxStaticForce);
+    f_static.tail(3) = f_static.tail(3).cwiseMax(-kMaxStaticTorque)
+                                       .cwiseMin(kMaxStaticTorque);
+    tau_task << jacobian.transpose() * (f_static - D * (jacobian * qD));
     tau_nullspace <<
         getDynamicallyConsistentNullspaceProjection<7>(inertia, jacobian) *
         (p.params[i].nullspace_stiffness * (desired.q_n - current.q_n) -

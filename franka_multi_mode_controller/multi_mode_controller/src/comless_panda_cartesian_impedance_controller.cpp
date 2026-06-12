@@ -33,6 +33,16 @@ const Vector6d kIntegralClipMin =
     (Vector6d() << -0.1, -0.1, -0.1, -0.3, -0.3, -0.3).finished();
 const Vector6d kIntegralClipMax =
     (Vector6d() << 0.1, 0.1, 0.1, 0.3, 0.3, 0.3).finished();
+
+// Bound on the static task-space force/torque the controller can command
+// (the stiffness + integral terms; the damping term vanishes at rest). The
+// FCI's default Cartesian collision reflex thresholds are 20 N / 25 Nm —
+// staying under them with margin means a blocked end-effector pushes steadily
+// without tripping the reflex, instead of stopping the robot. Clamping the
+// *force* (not the error) also keeps the bound valid for any stiffness set at
+// runtime via SetCartesianImpedance.
+constexpr double kMaxStaticForce = 15.0;   // N,  0.75 * 20 N reflex default
+constexpr double kMaxStaticTorque = 20.0;  // Nm, 0.80 * 25 Nm reflex default
 }  // namespace
 
 static auto registration = ControllerFactory::registerClass<Controller>(
@@ -75,8 +85,14 @@ void Controller::computeTauImpl(const std::vector<std::array<double, 7>*>& tau,
   Vector7d tau_task, tau_nullspace, tau_d;
   Matrix6d D = sqrtDesign<6>(pandaCartesianInertia(jacobian, inertia),
       p.stiffness, p.damping_ratio);
-  tau_task << jacobian.transpose() *
-      (-p.stiffness * error - D * (jacobian * qD) - Ki * error_integral_);
+  // Static (position-dependent) task force, clamped below the Cartesian
+  // collision reflex thresholds so a blocked EE cannot trip the reflex.
+  Vector6d f_static = -p.stiffness * error - Ki * error_integral_;
+  f_static.head(3) = f_static.head(3).cwiseMax(-kMaxStaticForce)
+                                     .cwiseMin(kMaxStaticForce);
+  f_static.tail(3) = f_static.tail(3).cwiseMax(-kMaxStaticTorque)
+                                     .cwiseMin(kMaxStaticTorque);
+  tau_task << jacobian.transpose() * (f_static - D * (jacobian * qD));
   tau_nullspace <<
       getDynamicallyConsistentNullspaceProjection<7>(inertia, jacobian) *
       (p.nullspace_stiffness * (desired.q_n - current.q_n) -

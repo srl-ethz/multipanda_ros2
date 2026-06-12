@@ -77,24 +77,24 @@ class CartesianMpc {
     double dt = 0.01;             // s, prediction timestep
     double dq_weight = 1e-2;      // joint-velocity regularization
     double terminal_scale = 10.0; // multiplier on the final-stage tracking cost
-    // Closed-loop damping, two parts. Without them the 100 Hz re-solve chain
-    // produces near-minimum-time plans that fly THROUGH the target with
-    // momentum, closing an underdamped loop around a constant target
-    // (measured ~1 Hz, +-10..20 mm limit-cycle-like ringing for seconds).
-    //  * terminal_lookahead (s): the FINAL stage tracks the COASTED pose
-    //    J*(dq_T*lookahead + q_T - q0) - r_T - "be on target lookahead
-    //    seconds after the horizon if you keep coasting". Velocity toward a
-    //    not-yet-reached target REDUCES this error (no cruise drag, unlike a
-    //    plain ||dq_T||^2 penalty, which lags a moving target by ~v * its
-    //    weight); velocity AT the target is pure predicted overshoot and gets
-    //    the full terminal task weight. For a MOVING target the coasted pose
-    //    is compared against the target extrapolated by the same span at the
-    //    reference velocity (see the velocity-tracking term), so coasting at
-    //    the target's own velocity is the terminal optimum.
-    //  * terminal_dq_weight: small plain ||dq_T||^2 backstop for the
-    //    null-space velocity components the look-ahead (living in task space)
-    //    cannot see. Keep small: this one DOES drag on moving targets.
-    double terminal_lookahead = 0.2;
+    // Closed-loop damping: without it the 100 Hz re-solve chain produces
+    // near-minimum-time plans that fly THROUGH the target with momentum,
+    // closing an underdamped loop around a constant target (measured ~1 Hz,
+    // +-10..20 mm limit-cycle-like ringing for seconds). It comes from two
+    // terms: (a) the per-stage velocity-tracking cost (Weights::
+    // velocity_weight), which for a held target degenerates to task-space
+    // damping and for a moving target tracks the reference velocity instead
+    // of dragging on it, and (b) this plain ||dq_T||^2 terminal penalty,
+    // which makes each plan end near rest. (b) does drag a moving target (a
+    // cruise velocity v at the horizon end costs terminal_dq_weight * v^2),
+    // so keep it moderate: at 10 the drag is not measurable on a 0.2/0.3 Hz,
+    // 10 cm Lissajous (amp 100%, lag < 10 ms) while a 10 cm step settles to
+    // 2 mm in ~0.4 s with ~6 mm overshoot and a 70 deg rotation step settles
+    // to 0.7 deg in ~0.7 s with no overshoot (Stage-1.10 numbers, measured
+    // with a faithful sim torque-rate limiter). (A terminal look-ahead cost
+    // tracking the coasted pose J*(q_T + alpha*dq_T) was removed once the
+    // velocity term carried the moving-target case; see
+    // MPC_development_plan.md Stages 1.9/1.10.)
     double terminal_dq_weight = 10.0;
     int max_iteration = 10000;    // OSQP iteration cap
     // OSQP ADMM termination tolerances. The QP is poorly scaled (dt*Minv /

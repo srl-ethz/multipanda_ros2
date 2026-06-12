@@ -189,13 +189,11 @@ bool CartesianMpc::solve(const Vector7d& q0,
   // Recovery: recovery_weight (q_k_i - q_safe_i)^2 for joints measured
   //   outside their margined position limit, pulling back just inside.
   // Regularization: dq_weight ||dq_k||^2 and input_weight ||u_k||^2.
-  // Closed-loop damping (see Config): the FINAL stage tracks the COASTED pose
-  //   J (q_T + lookahead dq_T) - b_T instead of J q_T - b_T, which penalizes
-  //   predicted OVERSHOOT (momentum at the target) without dragging on a
-  //   moving target the way a plain ||dq_T||^2 penalty does; a small
-  //   terminal_dq_weight ||dq_T||^2 backstop covers the null-space velocity
-  //   the task-space look-ahead cannot see. Without these the re-solve chain
-  //   closes an underdamped loop that rings around a constant target at ~1 Hz.
+  // Closed-loop damping (see Config): the velocity-tracking term above (pure
+  //   damping for a held target, where v_k == 0) plus the terminal
+  //   terminal_dq_weight ||dq_T||^2 penalty, which makes each plan end near
+  //   rest. Without these the re-solve chain closes an underdamped loop that
+  //   rings around a constant target at ~1 Hz.
   // The reference twists are clamped (max_ref_*) so far-away targets do not
   // produce outsized Gauss-Newton steps the frozen linearization cannot
   // honor; the 100 Hz re-solve turns them into a bounded-speed approach.
@@ -272,17 +270,7 @@ bool CartesianMpc::solve(const Vector7d& q0,
   for (int k = 1; k <= T; ++k) {
     const double scale = (k == T) ? config_.terminal_scale : 1.0;
     const Matrix7d JtWJ = 2.0 * scale * JtWJ_base;
-    Vector6d b_k = jacobian * q0 + ref_clamped[k - 1];
-    if (k == T) {
-      // The terminal look-ahead coasts `terminal_lookahead` seconds PAST the
-      // horizon, so it must compare against the target EXTRAPOLATED by the
-      // same span at the reference velocity. Without this a moving target
-      // makes the look-ahead read sustained cruise as predicted overshoot
-      // and brake at the horizon end; with it, coasting AT the target's
-      // velocity is the terminal optimum (v_ref == 0 for a held target, so
-      // the constant-target damping is untouched).
-      b_k += config_.terminal_lookahead * v_ref[k - 1];
-    }
+    const Vector6d b_k = jacobian * q0 + ref_clamped[k - 1];
     const Vector7d g_q = -2.0 * scale * (JtW * b_k);
     // Upper triangle of the (symmetric) q_k block: tracking + projected
     // posture (both dense); recovery is diagonal (setFromTriplets sums
@@ -298,7 +286,7 @@ bool CartesianMpc::solve(const Vector7d& q0,
         g_q - 2.0 * weights.posture_weight * posture_g -
         2.0 * recovery_w.cwiseProduct(q_safe);
     // dq_k velocity regularization (diagonal); the final stage additionally
-    // carries the small terminal_dq_weight backstop.
+    // carries the terminal_dq_weight end-near-rest penalty.
     const double dq_w = config_.dq_weight +
                         ((k == T) ? config_.terminal_dq_weight : 0.0);
     for (int i = 0; i < kNq; ++i) {
@@ -316,27 +304,6 @@ bool CartesianMpc::solve(const Vector7d& q0,
       }
       gradient.segment(ix(k) + kNq, kNq) +=
           -2.0 * weights.velocity_weight * (JtW * v_ref[k - 1]);
-    }
-    if (k == T) {
-      // Look-ahead damping: the terminal residual is J (q_T + alpha dq_T)
-      // - b_T, i.e. the q_T-only residual above plus the cross/velocity
-      // terms of the expanded square: 2 alpha q'J'WJ dq + alpha^2 dq'J'WJ dq
-      // - 2 alpha b'WJ dq. The q-only terms are already in place.
-      const double alpha = config_.terminal_lookahead;
-      const Matrix7d cross = alpha * JtWJ;  // JtWJ already carries 2*scale
-      for (int i = 0; i < kNq; ++i) {
-        // q_T (rows) x dq_T (cols): strictly upper-triangular as a whole
-        // block, so emit it fully.
-        for (int j = 0; j < kNq; ++j) {
-          p_triplets.emplace_back(ix(k) + i, ix(k) + kNq + j, cross(i, j));
-        }
-        // dq_T x dq_T: upper triangle.
-        for (int j = i; j < kNq; ++j) {
-          p_triplets.emplace_back(ix(k) + kNq + i, ix(k) + kNq + j,
-                                  alpha * cross(i, j));
-        }
-      }
-      gradient.segment(ix(k) + kNq, kNq) += alpha * g_q;
     }
   }
   // Input regularization (diagonal) + acceleration smoothness (dense in u_k:

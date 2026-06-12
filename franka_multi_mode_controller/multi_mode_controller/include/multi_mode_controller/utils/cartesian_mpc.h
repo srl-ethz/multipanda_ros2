@@ -56,10 +56,15 @@ namespace panda_controllers {
 //          when the measured state has drifted past a margined bound the QP
 //          stays feasible (it can always plan the brake) instead of failing
 //          PRIMAL_INFEASIBLE, which would freeze the controller at the limit.
-//       2. Active recovery. Any joint measured outside its margined position
-//          limit gets a quadratic pull recovery_weight*(q_k - q_safe)^2
-//          toward a point just inside the limit, steering it back into the
-//          valid range over the next solves.
+//       2. Active recovery. Joints near/past their margined position limit
+//          get a quadratic pull w_i*(q_k - q_safe)^2 toward a point just
+//          inside the limit, steering them back into the valid range over the
+//          next solves. The weight w_i ramps in continuously over a band
+//          inside the limit (Config::recovery_band) instead of switching on
+//          at the bound: a binary switch made the plan jump between "sit on
+//          the bound" and "retreat recovery_backoff inward" whenever a
+//          disturbance held a joint hovering at the bound (bang-bang limit
+//          cycle at the re-solve rate; see Config::recovery_weight).
 //     Torque bounds stay hard (inputs are free variables, so they can never
 //     cause infeasibility).
 //
@@ -125,12 +130,22 @@ class CartesianMpc {
     // so the frozen M/c/J remain accurate; 0.15 rad does not bind during
     // normal tracking (<= qD_max * horizon would be ~0.22 rad flat out).
     double trust_region = 0.15;
-    // Quadratic pull toward q_safe = limit -+ recovery_backoff for any joint
-    // measured outside its margined position limit. Sized at task-weight
-    // scale so it overrules the tracking cost's wish to hold the offending
-    // joint, without distorting the QP scaling.
+    // Quadratic pull toward q_safe = limit -+ recovery_backoff for joints
+    // near/past their margined position limit. Sized at task-weight scale so
+    // it overrules the tracking cost's wish to hold the offending joint,
+    // without distorting the QP scaling. The weight ramps in CONTINUOUSLY
+    // over recovery_band (rad) inside the margined limit - zero at the band
+    // edge, quadratic ramp to recovery_weight AT the limit, growing further
+    // outside it. A binary on/off switch here (the original formulation) made
+    // the planned q_ref jump by ~recovery_backoff between consecutive solves
+    // whenever a disturbance (e.g. an unmodelled EE payload, which the 1 kHz
+    // PD only rejects with ~tau_load/kp steady-state error) held a joint
+    // hovering at the bound - a solve-rate bang-bang limit cycle, ~5 mm of EE
+    // oscillation. With the ramp, the recovery pull and the task cost balance
+    // at a fixed point that moves continuously with the measured state.
     double recovery_weight = 5e3;
     double recovery_backoff = 0.02;  // rad inside the margined limit
+    double recovery_band = 0.05;     // rad, ramp-in width inside the limit
     // The reference twists fed to the Gauss-Newton cost are clamped to these
     // magnitudes. The trust region caps the achievable motion per solve
     // anyway, so larger reference errors only inject outsized gradients into

@@ -186,8 +186,9 @@ bool CartesianMpc::solve(const Vector7d& q0,
   //   singularity the damping shrinks pinv(J), so the (near-)uncontrollable
   //   directions fall back into N and get regularized too - exactly when
   //   that is wanted.
-  // Recovery: recovery_weight (q_k_i - q_safe_i)^2 for joints measured
-  //   outside their margined position limit, pulling back just inside.
+  // Recovery: w_i (q_k_i - q_safe_i)^2 for joints near/past their margined
+  //   position limit, pulling back just inside; w_i ramps in continuously
+  //   over recovery_band (anti-chatter, see below).
   // Regularization: dq_weight ||dq_k||^2 and input_weight ||u_k||^2.
   // Closed-loop damping (see Config): the velocity-tracking term above (pure
   //   damping for a held target, where v_k == 0) plus the terminal
@@ -201,17 +202,29 @@ bool CartesianMpc::solve(const Vector7d& q0,
   p_triplets.reserve(T * (2 * kNq * kNq + 3 * kNq + kNu * kNu));
   Eigen::VectorXd gradient = Eigen::VectorXd::Zero(n);
 
-  // Recovery target/weight per joint (zero weight when inside the limits).
+  // Recovery target/weight per joint. The weight is a CONTINUOUS function of
+  // the measured state: zero until q0 enters the recovery_band inside the
+  // margined limit, quadratic ramp to recovery_weight at the limit, and
+  // growing further (s > 1) outside it - so past-the-limit pull is at least
+  // as strong as the former binary switch. Continuity is the point: a binary
+  // on/off (full weight the instant q0 crossed the bound, zero once back
+  // inside) made the planned q_ref jump by ~recovery_backoff between
+  // consecutive solves whenever a disturbance (unmodelled EE payload barely
+  // rejected by the 1 kHz PD) held a joint hovering at the bound - a
+  // bang-bang limit cycle at the re-solve rate, ~5 mm of EE oscillation.
   Vector7d recovery_w = Vector7d::Zero();
   Vector7d q_safe = Vector7d::Zero();
+  const double band = std::max(config_.recovery_band, 1e-9);
   for (int i = 0; i < kNq; ++i) {
-    if (q0(i) < q_lim_lo(i)) {
-      recovery_w(i) = config_.recovery_weight;
+    double s = 0.0;
+    if (q0(i) < q_lim_lo(i) + band) {
+      s = ((q_lim_lo(i) + band) - q0(i)) / band;
       q_safe(i) = q_lim_lo(i) + config_.recovery_backoff;
-    } else if (q0(i) > q_lim_hi(i)) {
-      recovery_w(i) = config_.recovery_weight;
+    } else if (q0(i) > q_lim_hi(i) - band) {
+      s = (q0(i) - (q_lim_hi(i) - band)) / band;
       q_safe(i) = q_lim_hi(i) - config_.recovery_backoff;
     }
+    recovery_w(i) = config_.recovery_weight * s * s;
   }
 
   const Eigen::DiagonalMatrix<double, 6> W = weights.task_weight.asDiagonal();

@@ -378,3 +378,42 @@ TEST(CartesianMpc, RecoversFromMarginViolation) {
   EXPECT_GT(s.q_ref.back()(0), q(0) + 0.008);
   EXPECT_GT(s.dq_ref.back()(0), 0.0);  // still moving inward at horizon end
 }
+
+// Anti-chatter regression: the recovery cost must be CONTINUOUS in the
+// measured state. The original binary on/off switch (full recovery_weight the
+// instant q0 crossed the margined bound, zero just inside) made the planned
+// q_ref jump by ~recovery_backoff between consecutive solves when a
+// disturbance (e.g. an unmodelled EE payload) held a joint hovering at the
+// bound - a bang-bang limit cycle, ~5 mm of EE oscillation. Two solves with
+// q0 straddling the bound by +-eps must produce near-identical plans.
+TEST(CartesianMpc, RecoveryPlanContinuousAcrossMarginedBound) {
+  CartesianMpc::Config cfg;
+  cfg.eps_abs = 1e-6;  // single cold solves, compared to each other
+  cfg.eps_rel = 1e-6;
+  const double bound = -2.8973 + cfg.joint_position_margin;  // joint 1 lower
+  constexpr double kEps = 1e-4;  // rad, the straddle
+  // A reference that actively pushes joint 1 onto its lower bound, the
+  // scenario in which the old formulation chattered.
+  std::vector<V6> refs(10, V6::Zero());
+  for (auto& r : refs) {
+    r(0) = -0.05;
+  }
+  auto solve_at = [&](double q1) {
+    CartesianMpc mpc{cfg};  // fresh instance: no warm-start cross-talk
+    CartesianMpc::Solution s;
+    V7 q = homeQ();
+    q(0) = q1;
+    EXPECT_TRUE(mpc.solve(q, V7::Zero(), testMass(), V7::Zero(),
+                          identityJacobian(), refs, weights(), s));
+    EXPECT_TRUE(s.success);
+    return s;
+  };
+  const auto inside = solve_at(bound + kEps);
+  const auto outside = solve_at(bound - kEps);
+  // The old switch produced a first-stage jump of O(recovery_backoff); the
+  // ramped weight must keep the plans within a few times the straddle.
+  for (int k = 0; k < 10; ++k) {
+    EXPECT_NEAR(inside.q_ref[k](0), outside.q_ref[k](0), 20 * kEps)
+        << "stage " << k;
+  }
+}

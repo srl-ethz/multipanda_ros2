@@ -194,9 +194,9 @@ bool CartesianMpc::solve(const Vector7d& q0,
   //   terminal_dq_weight ||dq_T||^2 penalty, which makes each plan end near
   //   rest. Without these the re-solve chain closes an underdamped loop that
   //   rings around a constant target at ~1 Hz.
-  // The reference twists are clamped (max_ref_*) so far-away targets do not
-  // produce outsized Gauss-Newton steps the frozen linearization cannot
-  // honor; the 100 Hz re-solve turns them into a bounded-speed approach.
+  // The reference twists are clamped (max_ref_* and the ref_speed_* governor
+  // cone, see below) so far-away targets do not produce outsized Gauss-Newton
+  // steps and the 100 Hz re-solve becomes a governed constant-speed approach.
   std::vector<Triplet> p_triplets;
   p_triplets.reserve(T * (2 * kNq * kNq + 3 * kNq + kNu * kNu));
   Eigen::VectorXd gradient = Eigen::VectorXd::Zero(n);
@@ -218,31 +218,47 @@ bool CartesianMpc::solve(const Vector7d& q0,
   const Eigen::Matrix<double, 7, 6> JtW = jacobian.transpose() * W;
   const Matrix7d JtWJ_base = JtW * jacobian;
 
-  // Clamp the reference twists (max_ref_*: a far target must not inject
-  // outsized Gauss-Newton steps) and estimate the per-stage reference
-  // VELOCITY by finite differences of the RAW refs - forward difference,
-  // repeated for the final stage. Constant refs (held target / empty queue)
-  // give v_ref == 0 exactly. v_ref is clamped separately
-  // (max_ref_velocity_*): a target jump looks like a huge one-command_dt
-  // velocity that the arm cannot follow.
+  // Clamp the reference twists. Two clamps, the TIGHTER wins per stage:
+  //  - max_ref_* (scalar): a far target must not inject outsized
+  //    Gauss-Newton steps the frozen linearization cannot honor;
+  //  - the REFERENCE SPEED GOVERNOR cone (see Config::ref_speed_*),
+  //    ref_catchup + ref_speed * (k+1)*dt, which turns a held far target
+  //    into a constant-speed approach instead of a receding carrot that
+  //    every plan sprints after at full torque.
+  // The per-stage reference VELOCITY is then estimated by finite
+  // differences of the GOVERNED refs - forward difference, repeated for the
+  // final stage - so a governed far target gets the cruise speed as
+  // feed-forward (the cone radius grows by ref_speed*dt per stage) rather
+  // than v == 0. References already slower than the cone (tracked
+  // trajectories, queued waypoints) pass through both clamps untouched.
+  // v_ref is clamped separately (max_ref_velocity_*): a target jump looks
+  // like a huge one-command_dt velocity that the arm cannot follow.
   std::vector<Vector6d> ref_clamped(T);
   std::vector<Vector6d> v_ref(T, Vector6d::Zero());
   for (int i = 0; i < T; ++i) {
     Vector6d ref = refs[i];
+    const double t_allow =
+        std::min(config_.max_ref_translation,
+                 config_.ref_catchup_translation +
+                     config_.ref_speed_translation * (i + 1) * dt);
+    const double r_allow =
+        std::min(config_.max_ref_rotation,
+                 config_.ref_catchup_rotation +
+                     config_.ref_speed_rotation * (i + 1) * dt);
     const double t_norm = ref.head(3).norm();
-    if (t_norm > config_.max_ref_translation) {
-      ref.head(3) *= config_.max_ref_translation / t_norm;
+    if (t_norm > t_allow) {
+      ref.head(3) *= t_allow / t_norm;
     }
     const double r_norm = ref.tail(3).norm();
-    if (r_norm > config_.max_ref_rotation) {
-      ref.tail(3) *= config_.max_ref_rotation / r_norm;
+    if (r_norm > r_allow) {
+      ref.tail(3) *= r_allow / r_norm;
     }
     ref_clamped[i] = ref;
   }
   if (T > 1) {
     for (int i = 0; i < T; ++i) {
       const int hi = std::min(i + 1, T - 1);
-      Vector6d v = (refs[hi] - refs[hi - 1]) / dt;
+      Vector6d v = (ref_clamped[hi] - ref_clamped[hi - 1]) / dt;
       const double tv_norm = v.head(3).norm();
       if (tv_norm > config_.max_ref_velocity_translation) {
         v.head(3) *= config_.max_ref_velocity_translation / tv_norm;

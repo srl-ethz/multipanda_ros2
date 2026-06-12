@@ -135,11 +135,39 @@ class CartesianMpc {
     // magnitudes. The trust region caps the achievable motion per solve
     // anyway, so larger reference errors only inject outsized gradients into
     // the QP (aggressive, jerky plans far outside the linearization's
-    // validity); the clamp turns a distant target into a bounded-speed
-    // approach realized by the 100 Hz re-solve.
+    // validity).
     double max_ref_translation = 0.3;  // m
     double max_ref_rotation = 0.5;     // rad
-    // The reference VELOCITIES (finite differences of the raw reference
+    // REFERENCE SPEED GOVERNOR. The state boxes bound the PLAN, not the
+    // PLANT: at 100 Hz only the first ~10 ms of each plan is executed, so a
+    // far target whose clamped reference stays max_ref_* ahead of the EE (a
+    // RECEDING CARROT) makes every plan a full-torque sprint whose planned
+    // deceleration tail is perpetually postponed. The 1 kHz PD adds up to
+    // tau_max (vs the plan's 0.9 tau_max) on top, and the braking-rollout
+    // feasibility widening then accepts the resulting overspeed as the next
+    // x0 instead of faulting - measured in sim: joints at 2x the velocity
+    // box, EE at 2.5 m/s and ~380 W peak mechanical power for a 40 cm step
+    // (power_limit_violation on the real robot). The fix is at the source:
+    // each reference twist is additionally clamped to a per-stage SPEED CONE
+    //   |r_k| <= ref_catchup + ref_speed * (k+1)*dt,
+    // a slope of ref_speed plus a small catch-up allowance so mm-scale
+    // tracking error does not eat into the speed budget. Because the cone
+    // re-centers on the EE every re-solve, the allowance is re-granted each
+    // cycle and the EFFECTIVE approach speed is ref_speed + ref_catchup /
+    // (T*dt) - 0.4 m/s at the defaults, measured exactly in sim. A far
+    // target becomes a governed cruise; references already moving slower
+    // than ref_speed (queued trajectories, the validation Lissajous) are
+    // untouched. The reference VELOCITY feed-forward is computed from the
+    // governed refs, so a held far target gets the cruise velocity as
+    // feed-forward instead of v == 0. Governed 41 cm step (vs un-governed):
+    // peak EE 0.45 m/s (2.52), peak dq 1.41 rad/s (4.01, vs box 2.066),
+    // peak total power 60 W (376), settle 1.12 s (1.17) - same arrival
+    // time, the sprint bought nothing but the violation.
+    double ref_speed_translation = 0.3;  // m/s, governed approach speed
+    double ref_speed_rotation = 1.0;     // rad/s
+    double ref_catchup_translation = 0.01;  // m, tracking-error allowance
+    double ref_catchup_rotation = 0.05;     // rad
+    // The reference VELOCITIES (finite differences of the governed reference
     // twists, see the class comment) are clamped likewise: a target JUMP
     // (immediate-target override replacing the waypoint queue) shows up as a
     // huge apparent target velocity for one command_dt; the clamp keeps the
@@ -165,15 +193,16 @@ class CartesianMpc {
     double posture_weight = 10.0;
     // Weight of the task-space velocity tracking ||J*dq_k - v_k||^2_W per
     // stage (v_k = reference velocity from finite differences of the
-    // reference poses; zero for a held target, where this becomes damping).
+    // GOVERNED reference twists; zero for a held in-reach target, where this
+    // becomes damping, and the governed cruise speed for a held far target).
     // Shares the task_weight metric W, so its value is a time constant
     // squared (velocity_weight = tau^2: a velocity error of e/tau costs like
     // a position error of e). Keep SMALL: it acts at every stage, so with
     // v_k == 0 (held target / single-pose commands) it drags the approach
     // the same way the rejected plain terminal ||dq||^2 damper did -
     // tau^2 = 2e-3 totals ~20% of that damper's magnitude across the
-    // horizon. The moving-target case is carried by the v_k feed-forward
-    // and the v_k-extrapolated terminal look-ahead, not by a large weight.
+    // horizon. The moving-target case is carried by the v_k feed-forward,
+    // not by a large weight.
     double velocity_weight = 2e-3;
     // Weight of the acceleration smoothness ||Minv*(u_k - c)||^2 per input.
     double accel_weight = 1e-4;

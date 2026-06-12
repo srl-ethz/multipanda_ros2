@@ -170,6 +170,10 @@ TEST(CartesianMpc, PostureDoesNotBiasTaskSpace) {
 // step in sim.
 TEST(CartesianMpc, PlanBoundsArrivalMomentum) {
   CartesianMpc::Config cfg;
+  // Disable the reference speed governor: this test probes the terminal
+  // damper against an UN-governed aggressive step (the governor would slow
+  // the approach long before the damper matters).
+  cfg.ref_speed_translation = 1e3;
   CartesianMpc mpc{cfg};
   CartesianMpc::Solution s;
   const std::vector<V6> refs(10, (V6() << 0.05, 0, 0, 0, 0, 0).finished());
@@ -306,6 +310,52 @@ TEST(CartesianMpc, TrustRegionBoundsExcursion) {
   for (const auto& q : s.q_ref) {
     EXPECT_LE((q - q0).cwiseAbs().maxCoeff(), cfg.trust_region + 1e-3);
   }
+}
+
+// REFERENCE SPEED GOVERNOR regression (real-robot power_limit_violation on a
+// 40 cm step): a held FAR target must produce a governed constant-speed
+// approach, not a full-torque sprint after a receding max_ref_* carrot. The
+// per-stage cone |r_k| <= ref_catchup + ref_speed*(k+1)*dt bounds both the
+// plan's displacement and its implied task-space speed; with the cone
+// disabled the same target must plan a much faster sprint (showing the cone,
+// not some other cost, is what governs).
+TEST(CartesianMpc, GovernorBoundsApproachSpeedForFarTarget) {
+  CartesianMpc::Config cfg;
+  CartesianMpc mpc{cfg};
+  CartesianMpc::Solution s;
+  // 0.5 m away in task dim 0 (== joint 0): far beyond max_ref_translation.
+  const std::vector<V6> refs(10, (V6() << 0.5, 0, 0, 0, 0, 0).finished());
+  ASSERT_TRUE(mpc.solve(homeQ(), V7::Zero(), testMass(), V7::Zero(),
+                        identityJacobian(), refs, weights(), s));
+  ASSERT_TRUE(s.success);
+  // Plan displacement bounded by the cone at the horizon end (+ slack).
+  const double allow_T =
+      cfg.ref_catchup_translation +
+      cfg.ref_speed_translation * 10.0 * cfg.dt;  // 0.01 + 0.3*0.1 = 0.04
+  EXPECT_LE(s.q_ref.back()(0) - homeQ()(0), allow_T + 0.005);
+  // Implied per-stage task speed stays near ref_speed (transient catch-up of
+  // the ref_catchup offset allowed for, hence the slack), nowhere near the
+  // 2.066 rad/s velocity box the un-governed sprint saturates.
+  const auto max_stage_speed = [&](const CartesianMpc::Solution& sol) {
+    double m = 0.0;
+    double prev = homeQ()(0);
+    for (const auto& q : sol.q_ref) {
+      m = std::max(m, (q(0) - prev) / cfg.dt);
+      prev = q(0);
+    }
+    return m;
+  };
+  const double v_governed = max_stage_speed(s);
+  EXPECT_LE(v_governed, 0.8);  // m/s (ref_speed 0.3 + catch-up transient)
+  // Comparative: cone disabled -> the old sprint (velocity-box-limited).
+  CartesianMpc::Config cfg_off = cfg;
+  cfg_off.ref_speed_translation = 1e3;
+  CartesianMpc mpc_off{cfg_off};
+  CartesianMpc::Solution s_off;
+  ASSERT_TRUE(mpc_off.solve(homeQ(), V7::Zero(), testMass(), V7::Zero(),
+                            identityJacobian(), refs, weights(), s_off));
+  ASSERT_TRUE(s_off.success);
+  EXPECT_GT(max_stage_speed(s_off), 1.5 * v_governed);
 }
 
 // A state that has already drifted past a margined position bound used to make

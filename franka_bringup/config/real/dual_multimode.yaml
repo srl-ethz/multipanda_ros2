@@ -68,3 +68,4 @@ paco/real_multi_mode_controller:
         resources:
             dual_cartesian_impedance_controller: ["left&right"]
     panda_mpc_controller.command_dt: 0.1
+    panda_mpc_controller.reference_filter_tau: 0.0995

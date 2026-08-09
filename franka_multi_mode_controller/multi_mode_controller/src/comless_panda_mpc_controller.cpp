@@ -6,6 +6,8 @@
 #include <utility>
 
 #include <multi_mode_controller/utils/controller_factory.h>
+#include <multi_mode_controller/utils/first_order_pose_filter.h>
+#include <multi_mode_controller/utils/mpc_cartesian_impedance_output.h>
 #include <multi_mode_controller/utils/panda_limits.h>
 
 using namespace panda_controllers;
@@ -18,8 +20,11 @@ using Controller = ComlessPandaMpcController;
 
 namespace {
 constexpr double kSolvePeriod = 0.01;   // s, ~100 Hz worker rate
+constexpr double kControlPeriod = 0.001;  // s, 1 kHz torque/filter rate
 constexpr double kStaleTimeout = 0.05;  // s, drop to hold if solution older
 constexpr double kDeltaTauMax = 1.0;    // Nm, per-cycle torque rate limit
+constexpr double kMaxStaticForce = 15.0;   // N, matches impedance controller
+constexpr double kMaxStaticTorque = 20.0;  // Nm, matches impedance controller
 // Upper bound on buffered waypoints. Each command extends the buffer (per the
 // spec), so this bounds memory / look-ahead under high-rate republishing.
 // ~200 s of trajectory at the default 0.1 s spacing - ample for one sequence.
@@ -56,6 +61,13 @@ Params Controller::defaultParameters() {
   p.posture_weight = 10.0;
   p.velocity_weight = CartesianMpc::Weights{}.velocity_weight;
   p.accel_weight = CartesianMpc::Weights{}.accel_weight;
+  p.stiffness.setZero();
+  p.stiffness.topLeftCorner(3, 3) =
+      400.0 * Eigen::Matrix3d::Identity();
+  p.stiffness.bottomRightCorner(3, 3) =
+      20.0 * Eigen::Matrix3d::Identity();
+  p.damping_ratio = Vector6d::Constant(0.8);
+  p.nullspace_stiffness = 10.0;
   return p;
 }
 
@@ -85,6 +97,7 @@ void Controller::startImpl() {
   }
   active_solution_.valid = false;
   clearWaypoints();
+  filtered_target_initialized_ = false;
   if (!robot_data_.empty()) {
     hold_q_ = Eigen::Map<const Vector7d>(robot_data_[0]->state().q.data());
   }
@@ -98,25 +111,55 @@ void Controller::stopImpl() {
 }
 
 void Controller::computeTauImpl(const std::vector<std::array<double, 7>*>& tau,
-                                const Pose& /*desired*/, const Params& p) {
+                                const Pose& desired, const Params& p) {
   if (tau.empty() || tau[0] == nullptr || robot_data_.empty()) {
     return;
   }
 
   Eigen::Map<const Vector7d> q(robot_data_[0]->state().q.data());
   Eigen::Map<const Vector7d> dq(robot_data_[0]->state().dq.data());
+  const Matrix7d mass = robot_data_[0]->mass();
+  const Vector7d coriolis = robot_data_[0]->coriolis();
+  const Eigen::Matrix<double, 6, 7> jacobian =
+      robot_data_[0]->eeZeroJacobian();
+  const Eigen::Affine3d transform(
+      Eigen::Matrix4d::Map(robot_data_[0]->state().O_T_EE.data()));
+
+  // Match the Cartesian impedance controller's alpha=0.01, 1 kHz target
+  // filter for streamed single-pose policy commands. When this interface is
+  // inactive, continuously anchor the state to the measured pose so enabling
+  // it can never introduce a reference jump.
+  const bool immediate_target = immediate_target_active_.load();
+  if (!filtered_target_initialized_ || !immediate_target) {
+    filtered_target_position_ = transform.translation();
+    filtered_target_orientation_ = Eigen::Quaterniond(transform.linear());
+    filtered_target_orientation_.normalize();
+    filtered_target_initialized_ = true;
+  } else {
+    const double alpha = firstOrderFilterAlpha(
+        kControlPeriod, reference_filter_time_constant_);
+    filtered_target_position_ +=
+        alpha * (desired.position - filtered_target_position_);
+    filtered_target_orientation_ = firstOrderFilterOrientation(
+        filtered_target_orientation_, desired.orientation, alpha);
+  }
 
   // Publish a fresh state snapshot for the worker (non-blocking).
   if (snapshot_mutex_.try_lock()) {
     snapshot_.q = q;
     snapshot_.dq = dq;
-    snapshot_.mass = robot_data_[0]->mass();
-    snapshot_.coriolis = robot_data_[0]->coriolis();
-    snapshot_.jacobian = robot_data_[0]->eeZeroJacobian();
-    Eigen::Affine3d transform(
-        Eigen::Matrix4d::Map(robot_data_[0]->state().O_T_EE.data()));
+    snapshot_.mass = mass;
+    snapshot_.coriolis = coriolis;
+    snapshot_.jacobian = jacobian;
     snapshot_.position = transform.translation();
     snapshot_.rotation = transform.linear();
+    snapshot_.immediate_target_active = immediate_target;
+    snapshot_.filtered_target_position = filtered_target_position_;
+    snapshot_.filtered_target_rotation =
+        filtered_target_orientation_.toRotationMatrix();
+    snapshot_.raw_target_position = desired.position;
+    snapshot_.raw_target_rotation =
+        desired.orientation.normalized().toRotationMatrix();
     snapshot_.valid = true;
     snapshot_mutex_.unlock();
   }
@@ -131,7 +174,6 @@ void Controller::computeTauImpl(const std::vector<std::array<double, 7>*>& tau,
 
   const double now = steadyNow();
   Vector7d q_ref;
-  Vector7d dq_ref = Vector7d::Zero();
   Vector7d tau_ff = Vector7d::Zero();
   const bool fresh = active_solution_.valid &&
                      !active_solution_.q_ref.empty() &&
@@ -142,17 +184,23 @@ void Controller::computeTauImpl(const std::vector<std::array<double, 7>*>& tau,
         std::floor((now - active_solution_.solve_time) / active_solution_.dt));
     idx = std::clamp(idx, 0, T - 1);
     q_ref = active_solution_.q_ref[idx];
-    dq_ref = active_solution_.dq_ref[idx];
     tau_ff = active_solution_.tau_ff[idx];
     hold_q_ = q_ref;  // remember last tracked reference for the hold fallback
   } else {
     q_ref = hold_q_;  // MPC stale/failed: hold the last reference, damp velocity
   }
 
-  // 1 kHz joint-space tracking PD around the MPC feed-forward torque. Gravity is
-  // auto-compensated by the hardware layer; tau_ff already contains Coriolis.
-  Vector7d tau_d =
-      tau_ff + p.kp.cwiseProduct(q_ref - q) + p.kd.cwiseProduct(dq_ref - dq);
+  // Always-on Cartesian impedance output around the MPC reference. Decompose
+  // the planned non-Coriolis torque into task/null-space components, combine
+  // its task wrench with the compliant position feedback, and clamp that
+  // static wrench exactly like panda_cartesian_impedance_controller. This
+  // preserves the MPC feed-forward in free space while giving contact the
+  // same stiffness, inertia-aware damping and steady wrench ceiling.
+  const auto impedance_output = computeMpcCartesianImpedanceOutput(
+      q, dq, q_ref, tau_ff, mass, coriolis, jacobian, p.stiffness,
+      p.damping_ratio, p.nullspace_stiffness, kMaxStaticForce,
+      kMaxStaticTorque);
+  const Vector7d& tau_d = impedance_output.tau;
   for (size_t i = 0; i < 7; ++i) {
     (*tau[0])[i] = tau_d[i];
   }
@@ -184,9 +232,16 @@ void Controller::setCommandDt(double command_dt) {
   }
 }
 
+void Controller::setReferenceFilterTimeConstant(double time_constant) {
+  if (time_constant >= 0.0) {
+    reference_filter_time_constant_ = time_constant;
+  }
+}
+
 void Controller::clearWaypoints() {
   std::lock_guard<std::mutex> lock(waypoint_mutex_);
   waypoints_.clear();
+  immediate_target_active_.store(false);
 }
 
 void Controller::appendWaypoints(
@@ -194,6 +249,7 @@ void Controller::appendWaypoints(
   if (poses.empty()) {
     return;
   }
+  immediate_target_active_.store(false);
   const double now = steadyNow();
   bool dropped = false;
   {
@@ -239,20 +295,18 @@ void Controller::setImmediateTarget(const Eigen::Vector3d& position,
                                     const Eigen::Quaterniond& orientation) {
   const Eigen::Quaterniond target = orientation.normalized();
   {
-    // Purge and re-seed under a single lock so the worker never observes an
-    // empty buffer between the clear and the insert.
+    // Single-pose commands use the dedicated 1 kHz filtered-target snapshot,
+    // not the timed waypoint queue. Leaving the queue empty also guarantees a
+    // worker holding the previous (non-immediate) snapshot can only hold for
+    // one solve instead of observing the new target as an unfiltered step.
     std::lock_guard<std::mutex> lock(waypoint_mutex_);
     waypoints_.clear();
-    TimedPose wp;
-    wp.time = steadyNow() + command_dt_;  // the next step
-    wp.position = position;
-    wp.orientation = target;
-    waypoints_.push_back(wp);
   }
   Pose desired = getCurrentPose();
   desired.position = position;
   desired.orientation = target;
   setDesiredPoseBuffered(desired);
+  immediate_target_active_.store(true);
 }
 
 void Controller::pruneWaypoints(double now) {
@@ -337,7 +391,30 @@ void Controller::mpcLoop() {
       for (int k = 0; k < T; ++k) {
         Eigen::Vector3d p_ref;
         Eigen::Quaterniond o_ref;
-        if (sampleWaypoints(now + static_cast<double>(k + 1) * dt, p_ref, o_ref)) {
+        bool has_reference = false;
+        if (snap.immediate_target_active) {
+          // The RT loop has already advanced the filter to `now`. Predict its
+          // exact continuous-time first-order response over the QP horizon so
+          // the solver sees position and velocity preview without changing
+          // either the 1 kHz filter rate or the 100 Hz solve rate.
+          const double lookahead = static_cast<double>(k + 1) * dt;
+          const double alpha = firstOrderFilterAlpha(
+              lookahead, reference_filter_time_constant_);
+          p_ref = snap.filtered_target_position +
+              alpha * (snap.raw_target_position -
+                       snap.filtered_target_position);
+          const Eigen::Quaterniond filtered_orientation(
+              snap.filtered_target_rotation);
+          const Eigen::Quaterniond target_orientation(
+              snap.raw_target_rotation);
+          o_ref = firstOrderFilterOrientation(
+              filtered_orientation, target_orientation, alpha);
+          has_reference = true;
+        } else {
+          has_reference = sampleWaypoints(
+              now + static_cast<double>(k + 1) * dt, p_ref, o_ref);
+        }
+        if (has_reference) {
           Vector6d twist;
           twist.head(3) = p_ref - snap.position;
           twist.tail(3) =

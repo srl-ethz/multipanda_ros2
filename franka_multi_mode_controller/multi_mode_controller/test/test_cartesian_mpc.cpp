@@ -8,12 +8,18 @@
 #include <vector>
 
 #include <multi_mode_controller/utils/cartesian_mpc.h>
+#include <multi_mode_controller/utils/first_order_pose_filter.h>
+#include <multi_mode_controller/utils/mpc_cartesian_impedance_output.h>
 
 using panda_controllers::CartesianMpc;
 using V7 = Eigen::Matrix<double, 7, 1>;
 using V6 = Eigen::Matrix<double, 6, 1>;
 using M7 = Eigen::Matrix<double, 7, 7>;
 using M67 = Eigen::Matrix<double, 6, 7>;
+
+using panda_controllers::firstOrderFilterAlpha;
+using panda_controllers::firstOrderFilterOrientation;
+using panda_controllers::computeMpcCartesianImpedanceOutput;
 
 namespace {
 
@@ -50,6 +56,68 @@ CartesianMpc::Weights weights() {
 }
 
 }  // namespace
+
+// The MPC filter runs in the 1 kHz torque loop but is parameterized as a
+// continuous-time time constant. Its default must reproduce the impedance
+// controller's discrete alpha=0.01 exactly, and analytical 100 Hz horizon
+// prediction must equal ten 1 kHz updates.
+TEST(MpcReferenceFilter, MatchesImpedanceControllerAtOneKilohertz) {
+  const double tau = -0.001 / std::log(1.0 - 0.01);
+  EXPECT_NEAR(firstOrderFilterAlpha(0.001, tau), 0.01, 1e-12);
+
+  double iterated = 0.0;
+  for (int i = 0; i < 10; ++i) {
+    iterated += firstOrderFilterAlpha(0.001, tau) * (1.0 - iterated);
+  }
+  const double predicted = firstOrderFilterAlpha(0.01, tau);
+  EXPECT_NEAR(iterated, predicted, 1e-12);
+}
+
+TEST(MpcReferenceFilter, OrientationUsesShortestNormalizedPath) {
+  const Eigen::Quaterniond start = Eigen::Quaterniond::Identity();
+  Eigen::Quaterniond target(Eigen::AngleAxisd(
+      0.4, Eigen::Vector3d::UnitZ()));
+  // The antipodal quaternion represents the same target and must not make the
+  // interpolation take the long way around.
+  target.coeffs() = -target.coeffs();
+  const Eigen::Quaterniond halfway =
+      firstOrderFilterOrientation(start, target, 0.5);
+  EXPECT_NEAR(Eigen::AngleAxisd(halfway).angle(), 0.2, 1e-12);
+  EXPECT_NEAR(halfway.norm(), 1.0, 1e-12);
+}
+
+TEST(MpcCartesianImpedanceOutput, PreservesUnclampedFeedforward) {
+  const M7 mass = testMass();
+  const M67 jacobian = identityJacobian();
+  const V7 coriolis =
+      (V7() << 0.2, -0.1, 0.3, 0.0, 0.1, -0.2, 0.05).finished();
+  const V7 tau_ff = coriolis +
+      (V7() << 1.0, -2.0, 0.5, 0.2, -0.3, 0.4, 0.6).finished();
+  Eigen::Matrix<double, 6, 6> stiffness =
+      Eigen::Matrix<double, 6, 6>::Zero();
+  stiffness.topLeftCorner(3, 3) = 400.0 * Eigen::Matrix3d::Identity();
+  stiffness.bottomRightCorner(3, 3) = 20.0 * Eigen::Matrix3d::Identity();
+  const auto output = computeMpcCartesianImpedanceOutput(
+      homeQ(), V7::Zero(), homeQ(), tau_ff, mass, coriolis, jacobian,
+      stiffness, V6::Constant(0.8), 10.0);
+  EXPECT_LT((output.tau - tau_ff).norm(), 1e-10);
+}
+
+TEST(MpcCartesianImpedanceOutput, ClampsBlockedStaticTaskWrench) {
+  const M7 mass = testMass();
+  const M67 jacobian = identityJacobian();
+  Eigen::Matrix<double, 6, 6> stiffness =
+      Eigen::Matrix<double, 6, 6>::Zero();
+  stiffness.topLeftCorner(3, 3) = 400.0 * Eigen::Matrix3d::Identity();
+  stiffness.bottomRightCorner(3, 3) = 20.0 * Eigen::Matrix3d::Identity();
+  V7 q_ref = homeQ();
+  q_ref(0) += 0.1;  // 40 N requested along task x when the arm is blocked
+  const auto output = computeMpcCartesianImpedanceOutput(
+      homeQ(), V7::Zero(), q_ref, V7::Zero(), mass, V7::Zero(), jacobian,
+      stiffness, V6::Constant(0.8), 10.0);
+  EXPECT_NEAR(output.static_wrench(0), 15.0, 1e-12);
+  EXPECT_NEAR(output.tau(0), 15.0, 1e-12);
+}
 
 // A zero reference twist must yield an (almost) exact rest solution: the
 // dynamics exclude gravity, so holding the current pose needs ~zero torque.

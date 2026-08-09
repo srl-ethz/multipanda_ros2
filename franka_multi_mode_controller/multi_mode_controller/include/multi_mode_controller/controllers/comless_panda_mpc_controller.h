@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cmath>
 #include <deque>
 #include <mutex>
 #include <thread>
@@ -24,13 +25,18 @@ struct PandaMpcControllerPose {
 };
 
 struct PandaMpcControllerParams {
-  Eigen::Matrix<double, 7, 1> kp;          // 1 kHz tracking PD proportional gains
-  Eigen::Matrix<double, 7, 1> kd;          // 1 kHz tracking PD derivative gains
+  // Retained in the service for compatibility with existing clients. The
+  // always-on Cartesian impedance output layer supersedes this joint PD.
+  Eigen::Matrix<double, 7, 1> kp;
+  Eigen::Matrix<double, 7, 1> kd;
   Eigen::Matrix<double, 6, 1> task_weight; // MPC task-space tracking weight
   double input_weight;                     // MPC torque regularization weight
   double posture_weight;                   // MPC nominal-posture regularization
   double velocity_weight;                  // MPC reference-velocity tracking
   double accel_weight;                     // MPC acceleration smoothness
+  Eigen::Matrix<double, 6, 6> stiffness;   // Cartesian output stiffness
+  Eigen::Matrix<double, 6, 1> damping_ratio;
+  double nullspace_stiffness;
 };
 
 // A reference pose stamped on the steady clock (Franka base frame).
@@ -62,13 +68,14 @@ class ComlessPandaMpcController :
   // command_dt, chaining onto any waypoints already buffered.
   void appendWaypoints(
       const std::vector<std::pair<Eigen::Vector3d, Eigen::Quaterniond>>& poses);
-  // Replace the whole trajectory with a single target: atomically purges the
-  // buffer and inserts `pose` as the next step. Use for single-pose commands
-  // (e.g. end_effector_pose_cmd) that should override, not extend, the queue.
+  // Replace the whole trajectory with a single filtered target. This purges
+  // the waypoint queue; the 1 kHz loop filters `pose` and the MPC worker
+  // analytically predicts that filter over its horizon.
   void setImmediateTarget(const Eigen::Vector3d& position,
                           const Eigen::Quaterniond& orientation);
   void clearWaypoints();
   void setCommandDt(double command_dt);
+  void setReferenceFilterTimeConstant(double time_constant);
   // Override the nominal posture of the QP's redundancy-resolving
   // regularization. Call from init (before the solve thread starts).
   void setNominalPosture(const Eigen::Matrix<double, 7, 1>& q_nominal);
@@ -105,6 +112,11 @@ class ComlessPandaMpcController :
     Matrix67d jacobian = Matrix67d::Zero();
     Eigen::Vector3d position = Eigen::Vector3d::Zero();
     Eigen::Matrix3d rotation = Eigen::Matrix3d::Identity();
+    bool immediate_target_active = false;
+    Eigen::Vector3d filtered_target_position = Eigen::Vector3d::Zero();
+    Eigen::Matrix3d filtered_target_rotation = Eigen::Matrix3d::Identity();
+    Eigen::Vector3d raw_target_position = Eigen::Vector3d::Zero();
+    Eigen::Matrix3d raw_target_rotation = Eigen::Matrix3d::Identity();
   };
   struct SolutionBuffer {
     bool valid = false;
@@ -133,6 +145,17 @@ class ComlessPandaMpcController :
   std::mutex waypoint_mutex_;
   std::deque<TimedPose> waypoints_;
   double command_dt_{0.1};
+
+  // The single-pose policy interface is filtered in the 1 kHz control loop.
+  // 0.0995 s exactly matches alpha=0.01 at dt=1 ms in the impedance
+  // controller. The worker analytically predicts this filter over its horizon.
+  double reference_filter_time_constant_{
+      -0.001 / std::log(1.0 - 0.01)};
+  std::atomic<bool> immediate_target_active_{false};
+  bool filtered_target_initialized_{false};  // 1 kHz-loop private
+  Eigen::Vector3d filtered_target_position_{Eigen::Vector3d::Zero()};
+  Eigen::Quaterniond filtered_target_orientation_{
+      Eigen::Quaterniond::Identity()};
 
   Vector7d hold_q_{Vector7d::Zero()};  // RT fallback target (hold position)
 

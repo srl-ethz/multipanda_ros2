@@ -40,3 +40,6 @@ paco/multi_mode_controller:
         resources:
             panda_cartesian_impedance_controller: ["right"]
     panda_mpc_controller.command_dt: 0.1
+    # Match panda_cartesian_impedance_controller's alpha=0.01 pose filter at
+    # 1 kHz. Set to 0.0 to disable filtering for end_effector_pose_cmd.
+    panda_mpc_controller.reference_filter_tau: 0.0995

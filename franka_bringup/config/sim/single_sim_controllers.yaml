@@ -80,3 +80,4 @@ multi_mode_controller:
     # ~/set_controllers service. Spacing (s) between consecutive commanded
     # waypoints on /panda/arm/mpc_end_effector_pose_cmd:
     panda_mpc_controller.command_dt: 0.1
+    panda_mpc_controller.reference_filter_tau: 0.0995

@@ -63,6 +63,10 @@ void Controller::setNominalPosture(const Vector7d& q_nominal) {
   mpc_.setNominalPosture(q_nominal);
 }
 
+void Controller::setReferenceModel(const MpcReferenceModel& model) {
+  ref_model_ = model;
+}
+
 Pose Controller::getCurrentPoseImpl() {
   Pose p;
   Eigen::Map<const Vector7d> q(robot_data_[0]->state().q.data());
@@ -84,6 +88,7 @@ void Controller::startImpl() {
     solution_.valid = false;
   }
   active_solution_.valid = false;
+  ref_filter_valid_ = false;
   clearWaypoints();
   if (!robot_data_.empty()) {
     hold_q_ = Eigen::Map<const Vector7d>(robot_data_[0]->state().q.data());
@@ -187,6 +192,7 @@ void Controller::setCommandDt(double command_dt) {
 void Controller::clearWaypoints() {
   std::lock_guard<std::mutex> lock(waypoint_mutex_);
   waypoints_.clear();
+  single_pose_mode_ = false;
 }
 
 void Controller::appendWaypoints(
@@ -207,6 +213,7 @@ void Controller::appendWaypoints(
     // setImmediateTarget waypoint), timestamping the new sequence from it
     // would put the whole sequence in the past and the controller would
     // fast-forward through it.
+    single_pose_mode_ = false;  // queued trajectories are not reference-shaped
     const double base =
         waypoints_.empty() ? now : std::max(now, waypoints_.back().time);
     for (std::size_t i = 0; i < poses.size(); ++i) {
@@ -243,6 +250,7 @@ void Controller::setImmediateTarget(const Eigen::Vector3d& position,
     // empty buffer between the clear and the insert.
     std::lock_guard<std::mutex> lock(waypoint_mutex_);
     waypoints_.clear();
+    single_pose_mode_ = true;
     TimedPose wp;
     wp.time = steadyNow() + command_dt_;  // the next step
     wp.position = position;
@@ -253,6 +261,78 @@ void Controller::setImmediateTarget(const Eigen::Vector3d& position,
   desired.position = position;
   desired.orientation = target;
   setDesiredPoseBuffered(desired);
+}
+
+namespace {
+// Clamp a vector's norm, leaving direction untouched.
+void clampNorm(Eigen::Ref<Eigen::Vector3d> v, double limit) {
+  const double n = v.norm();
+  if (limit > 0.0 && n > limit) {
+    v *= limit / n;
+  }
+}
+}  // namespace
+
+void Controller::rolloutReferenceModel(const StateSnapshot& snap,
+                                       const Eigen::Vector3d& target_position,
+                                       const Eigen::Quaterniond& target_orientation,
+                                       double dt, std::vector<Vector6d>& refs) {
+  // EMA the target, matching the impedance controllet's pose filter. Its gain
+  // is per 1 kHz cycle; here the worker runs at 1/kSolvePeriod, so convert
+  // through the time constant rather than reusing the raw gain.
+  const double alpha =
+      ref_model_.filter_tau > 0.0
+          ? 1.0 - std::exp(-kSolvePeriod / ref_model_.filter_tau)
+          : 1.0;
+  if (!ref_filter_valid_) {
+    ref_filter_position_ = target_position;
+    ref_filter_orientation_ = target_orientation;
+    ref_filter_valid_ = true;
+  } else {
+    ref_filter_position_ += alpha * (target_position - ref_filter_position_);
+    Eigen::Quaterniond target = target_orientation;
+    if (ref_filter_orientation_.coeffs().dot(target.coeffs()) < 0.0) {
+      target.coeffs() = -target.coeffs();
+    }
+    ref_filter_orientation_ = ref_filter_orientation_.slerp(alpha, target);
+    ref_filter_orientation_.normalize();
+  }
+
+  // Work in twist-from-current-pose coordinates: x starts at zero (anchored on
+  // the measured EE pose) and v starts at the measured EE twist, so stage 0 of
+  // the rollout reproduces the impedance law's instantaneous acceleration.
+  Vector6d x = Vector6d::Zero();
+  Vector6d v = snap.jacobian * snap.dq;
+  Vector6d target = Vector6d::Zero();
+  target.head(3) = ref_filter_position_ - snap.position;
+  target.tail(3) = rotationVector(ref_filter_orientation_.toRotationMatrix() *
+                                  snap.rotation.transpose());
+
+  const int T = static_cast<int>(refs.size());
+  for (int k = 0; k < T; ++k) {
+    // Clamp the STIFFNESS term only, then subtract the (unbounded) damping -
+    // mirroring the impedance controllet, which clamps its static wrench to
+    // 15 N / 20 Nm but leaves D*(J*dq) free. Clamping the total acceleration
+    // instead would cap the reference's velocity outright and distort the
+    // small-signal frequency response; clamping only the stiffness term
+    // reproduces the right saturation, where the approach speed settles at
+    // max_accel / (2*zeta*omega_n) on a far target and small signals stay
+    // fully linear.
+    Vector6d a;
+    a.head(3) =
+        ref_model_.omega_n * ref_model_.omega_n * (target.head(3) - x.head(3));
+    a.tail(3) = ref_model_.omega_n_rot * ref_model_.omega_n_rot *
+                (target.tail(3) - x.tail(3));
+    clampNorm(a.head(3), ref_model_.max_accel);
+    clampNorm(a.tail(3), ref_model_.max_accel_rot);
+    a.head(3) -= 2.0 * ref_model_.zeta * ref_model_.omega_n * v.head(3);
+    a.tail(3) -= 2.0 * ref_model_.zeta_rot * ref_model_.omega_n_rot * v.tail(3);
+    v += a * dt;
+    clampNorm(v.head(3), ref_model_.max_velocity);
+    clampNorm(v.tail(3), ref_model_.max_velocity_rot);
+    x += v * dt;
+    refs[k] = x;
+  }
 }
 
 void Controller::pruneWaypoints(double now) {
@@ -333,18 +413,36 @@ void Controller::mpcLoop() {
       const double now = steadyNow();
       pruneWaypoints(now);
 
+      bool shaped = false;
+      {
+        std::lock_guard<std::mutex> lock(waypoint_mutex_);
+        shaped = ref_model_.enabled && single_pose_mode_ && !waypoints_.empty();
+      }
+
       std::vector<Vector6d> refs(T, Vector6d::Zero());
-      for (int k = 0; k < T; ++k) {
+      if (shaped) {
+        // Single-pose command: shape it through the reference model so the
+        // closed loop reproduces the impedance controller's command->motion
+        // dynamics (see MpcReferenceModel).
         Eigen::Vector3d p_ref;
         Eigen::Quaterniond o_ref;
-        if (sampleWaypoints(now + static_cast<double>(k + 1) * dt, p_ref, o_ref)) {
-          Vector6d twist;
-          twist.head(3) = p_ref - snap.position;
-          twist.tail(3) =
-              rotationVector(o_ref.toRotationMatrix() * snap.rotation.transpose());
-          refs[k] = twist;
+        if (sampleWaypoints(now, p_ref, o_ref)) {
+          rolloutReferenceModel(snap, p_ref, o_ref, dt, refs);
         }
-        // else: empty buffer -> zero twist (hold current pose)
+      } else {
+        ref_filter_valid_ = false;  // re-seed on the next single-pose command
+        for (int k = 0; k < T; ++k) {
+          Eigen::Vector3d p_ref;
+          Eigen::Quaterniond o_ref;
+          if (sampleWaypoints(now + static_cast<double>(k + 1) * dt, p_ref, o_ref)) {
+            Vector6d twist;
+            twist.head(3) = p_ref - snap.position;
+            twist.tail(3) =
+                rotationVector(o_ref.toRotationMatrix() * snap.rotation.transpose());
+            refs[k] = twist;
+          }
+          // else: empty buffer -> zero twist (hold current pose)
+        }
       }
 
       const Params params = getParametersBuffered();

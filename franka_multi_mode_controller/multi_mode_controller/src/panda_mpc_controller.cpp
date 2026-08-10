@@ -56,6 +56,45 @@ bool Controller::initImpl(const std::vector<RobotData*>& /*robot_data*/,
     RCLCPP_WARN(node->get_logger(), "%s: failed to read '%s': %s", name.c_str(),
                 q_nominal_param.c_str(), e.what());
   }
+  // Optional reference-model overrides for the single-pose command path
+  // (see MpcReferenceModel). Defaults are fitted to the measured
+  // panda_cartesian_impedance_controller response.
+  MpcReferenceModel ref_model;
+  const std::string prefix = name + ".reference_model.";
+  const auto read_double = [&](const char* key, double& target) {
+    const std::string p = prefix + key;
+    try {
+      if (node->has_parameter(p)) {
+        target = node->get_parameter(p).as_double();
+      }
+    } catch (const std::exception& e) {
+      RCLCPP_WARN(node->get_logger(), "%s: failed to read '%s': %s",
+                  name.c_str(), p.c_str(), e.what());
+    }
+  };
+  try {
+    const std::string p = prefix + "enabled";
+    if (node->has_parameter(p)) {
+      ref_model.enabled = node->get_parameter(p).as_bool();
+    }
+  } catch (const std::exception& e) {
+    RCLCPP_WARN(node->get_logger(), "%s: failed to read '%senabled': %s",
+                name.c_str(), prefix.c_str(), e.what());
+  }
+  read_double("filter_tau", ref_model.filter_tau);
+  read_double("omega_n", ref_model.omega_n);
+  read_double("zeta", ref_model.zeta);
+  read_double("max_velocity", ref_model.max_velocity);
+  read_double("max_accel", ref_model.max_accel);
+  read_double("omega_n_rot", ref_model.omega_n_rot);
+  read_double("zeta_rot", ref_model.zeta_rot);
+  read_double("max_velocity_rot", ref_model.max_velocity_rot);
+  read_double("max_accel_rot", ref_model.max_accel_rot);
+  setReferenceModel(ref_model);
+  RCLCPP_INFO(node->get_logger(),
+              "%s: reference model %s (wn %.2f, zeta %.2f, tau %.3f s)",
+              name.c_str(), ref_model.enabled ? "ON" : "OFF",
+              ref_model.omega_n, ref_model.zeta, ref_model.filter_tau);
   return true;
 }
 

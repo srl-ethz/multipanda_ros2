@@ -130,4 +130,3 @@ multi_mode_controller:
     # Per-arm command topics: /mj_left/arm/mpc_end_effector_pose_cmd,
     # /mj_right/arm/mpc_end_effector_pose_cmd. Spacing (s) between waypoints:
     panda_mpc_controller.command_dt: 0.1
-    panda_mpc_controller.reference_filter_tau: 0.0995

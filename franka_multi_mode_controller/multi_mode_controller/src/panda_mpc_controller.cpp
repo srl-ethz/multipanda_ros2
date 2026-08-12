@@ -1,6 +1,5 @@
 #include <multi_mode_controller/controllers/panda_mpc_controller.h>
 
-#include <cmath>
 #include <memory>
 #include <utility>
 
@@ -10,7 +9,6 @@
 using namespace panda_controllers;
 using Vector6d = Eigen::Matrix<double, 6, 1>;
 using Vector7d = Eigen::Matrix<double, 7, 1>;
-using Matrix6d = Eigen::Matrix<double, 6, 6>;
 using Pose = PandaMpcControllerPose;
 using Params = PandaMpcControllerParams;
 using PoseStamped = geometry_msgs::msg::PoseStamped;
@@ -41,25 +39,6 @@ bool Controller::initImpl(const std::vector<RobotData*>& /*robot_data*/,
     RCLCPP_WARN(node->get_logger(), "%s: failed to read '%s': %s", name.c_str(),
                 command_dt_param.c_str(), e.what());
   }
-  // Optional time constant for the 1 kHz low-pass filter applied only to the
-  // streamed single-pose policy interface. Zero disables filtering. The
-  // default (~0.0995 s) matches alpha=0.01 at 1 kHz in the impedance
-  // controller.
-  const std::string filter_tau_param = name + ".reference_filter_tau";
-  try {
-    if (node->has_parameter(filter_tau_param)) {
-      const double filter_tau = node->get_parameter(filter_tau_param).as_double();
-      if (filter_tau >= 0.0) {
-        setReferenceFilterTimeConstant(filter_tau);
-      } else {
-        RCLCPP_WARN(node->get_logger(), "%s: '%s' must be non-negative.",
-                    name.c_str(), filter_tau_param.c_str());
-      }
-    }
-  } catch (const std::exception& e) {
-    RCLCPP_WARN(node->get_logger(), "%s: failed to read '%s': %s", name.c_str(),
-                filter_tau_param.c_str(), e.what());
-  }
   // Optional nominal posture for the QP's redundancy regularization
   // (defaults to the Panda ready pose).
   const std::string q_nominal_param = name + ".q_nominal";
@@ -77,6 +56,45 @@ bool Controller::initImpl(const std::vector<RobotData*>& /*robot_data*/,
     RCLCPP_WARN(node->get_logger(), "%s: failed to read '%s': %s", name.c_str(),
                 q_nominal_param.c_str(), e.what());
   }
+  // Optional reference-model overrides for the single-pose command path
+  // (see MpcReferenceModel). Defaults are fitted to the measured
+  // panda_cartesian_impedance_controller response.
+  MpcReferenceModel ref_model;
+  const std::string prefix = name + ".reference_model.";
+  const auto read_double = [&](const char* key, double& target) {
+    const std::string p = prefix + key;
+    try {
+      if (node->has_parameter(p)) {
+        target = node->get_parameter(p).as_double();
+      }
+    } catch (const std::exception& e) {
+      RCLCPP_WARN(node->get_logger(), "%s: failed to read '%s': %s",
+                  name.c_str(), p.c_str(), e.what());
+    }
+  };
+  try {
+    const std::string p = prefix + "enabled";
+    if (node->has_parameter(p)) {
+      ref_model.enabled = node->get_parameter(p).as_bool();
+    }
+  } catch (const std::exception& e) {
+    RCLCPP_WARN(node->get_logger(), "%s: failed to read '%senabled': %s",
+                name.c_str(), prefix.c_str(), e.what());
+  }
+  read_double("filter_tau", ref_model.filter_tau);
+  read_double("omega_n", ref_model.omega_n);
+  read_double("zeta", ref_model.zeta);
+  read_double("max_velocity", ref_model.max_velocity);
+  read_double("max_accel", ref_model.max_accel);
+  read_double("omega_n_rot", ref_model.omega_n_rot);
+  read_double("zeta_rot", ref_model.zeta_rot);
+  read_double("max_velocity_rot", ref_model.max_velocity_rot);
+  read_double("max_accel_rot", ref_model.max_accel_rot);
+  setReferenceModel(ref_model);
+  RCLCPP_INFO(node->get_logger(),
+              "%s: reference model %s (wn %.2f, zeta %.2f, tau %.3f s)",
+              name.c_str(), ref_model.enabled ? "ON" : "OFF",
+              ref_model.omega_n, ref_model.zeta, ref_model.filter_tau);
   return true;
 }
 
@@ -180,31 +198,6 @@ bool Controller::setParametersCallbackImpl(
   p_d.posture_weight = req->posture_weight;
   p_d.velocity_weight = req->velocity_weight;
   p_d.accel_weight = req->accel_weight;
-  // Existing SetMpc clients do not know about the newly added impedance
-  // fields and value-initialize them to zero. Require an explicit opt-in so a
-  // legacy tuning request cannot accidentally remove contact compliance.
-  if (req->update_impedance) {
-    const Matrix6d stiffness =
-        Eigen::Map<const Matrix6d>(req->stiffness.data());
-    const Vector6d damping_ratio =
-        Eigen::Map<const Vector6d>(req->damping_ratio.data());
-    const bool valid = stiffness.allFinite() && damping_ratio.allFinite() &&
-        std::isfinite(req->nullspace_stiffness) &&
-        stiffness.isApprox(stiffness.transpose(), 1e-9) &&
-        Eigen::SelfAdjointEigenSolver<Matrix6d>(stiffness)
-                .eigenvalues()
-                .minCoeff() >= -1e-9 &&
-        damping_ratio.minCoeff() >= 0.0 &&
-        req->nullspace_stiffness >= 0.0;
-    if (!valid) {
-      p_d = p;
-      res->success = false;
-      return true;
-    }
-    p_d.stiffness = stiffness;
-    p_d.damping_ratio = damping_ratio;
-    p_d.nullspace_stiffness = req->nullspace_stiffness;
-  }
   res->success = true;
   return true;
 }

@@ -34,8 +34,7 @@ using MpcDesPoseMsg = geometry_msgs::msg::PoseStamped;
 //     frame, provided by ControllerRosInterface): a single-pose convenience
 //     goal appended as one waypoint.
 //   * <resource>/<name>/parameters            (multi_mode_control_msgs/SetMpc):
-//     sets the retained PD fields, MPC cost weights, and Cartesian impedance
-//     output gains.
+//     sets the PD gains and MPC cost weights.
 class PandaMpcController :
     public virtual ComlessPandaMpcController,
     public virtual ControllerRosInterface<MpcServiceParameter,

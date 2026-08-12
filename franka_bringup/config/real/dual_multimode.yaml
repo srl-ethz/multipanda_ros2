@@ -64,7 +64,24 @@ paco/real_multi_mode_controller:
     # Coupled dual-cartesian stays the launch default on real hardware; switch
     # to the (experimental) per-arm MPC deliberately via ~/set_controllers.
     start_controllers:
-        names: ["dual_cartesian_impedance_controller"]
+        names: ["panda_mpc_controller"]
         resources:
-            dual_cartesian_impedance_controller: ["left&right"]
+            panda_mpc_controller: ["left","right"]
+        # names: ["dual_cartesian_impedance_controller"]
+        # resources:
+        #     dual_cartesian_impedance_controller: ["left&right"]
     panda_mpc_controller.command_dt: 0.1
+    # Reference model shaping the single-pose end_effector_pose_cmd path so the
+    # closed loop reproduces panda_cartesian_impedance_controller's
+    # command->motion dynamics (for policies trained on that controller).
+    # Tuned against a measured 2 cm chirp; max_accel reproduces the impedance
+    # law's 15 N static-force clamp, which is what limits its large-step speed.
+    panda_mpc_controller.reference_model.omega_n: 8.0
+    panda_mpc_controller.reference_model.zeta: 1.48
+    # Saturated approach speed = max_accel / (2*zeta*omega_n):
+    #   2.13 / 23.7 = 0.090 m/s, matching the impedance law's measured
+    #   large-step speed (its 15 N clamp against the task damping).
+    panda_mpc_controller.reference_model.max_accel: 3.5
+    # Rotation saturates through the impedance law's +-0.2 rad error clip
+    # (20 Nm/rad * 0.2 = 4 Nm), giving ~0.40 rad/s on a large turn.
+    panda_mpc_controller.reference_model.max_accel_rot: 20.0
